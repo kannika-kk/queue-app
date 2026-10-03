@@ -22,6 +22,8 @@ This guarantees the app starts and runs correctly even on a machine/host
 (e.g. Render's free tier) where those heavy packages are not installed.
 """
 
+import os
+import hmac
 import time
 import sqlite3
 from datetime import datetime, timedelta
@@ -31,11 +33,18 @@ from pathlib import Path
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    jsonify, flash, g, abort
+    jsonify, flash, g, abort, session
 )
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "college-project-secret-key"
+# Set SECRET_KEY and ADMIN_PASSWORD as environment variables on Render.
+# The fallback secret key is only for local development.
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "college-project-secret-key")
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+# Admin password. If it is not set, admin login is disabled (fails closed).
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 DB_PATH = Path(__file__).parent / "queue.db"
 
@@ -123,17 +132,17 @@ def parse_dt(s):
 
 
 # ---------------------------------------------------------------------------
-# Auth placeholder
+# Admin authentication (single shared password, session-based)
 # ---------------------------------------------------------------------------
-# Admin authentication is NOT required for this college prototype, but admin
-# routes are wrapped with this decorator so real authentication (session
-# check, login_required, API key, etc.) can be dropped in later without
-# restructuring every route.
+# The password comes from the ADMIN_PASSWORD environment variable. All admin
+# routes are wrapped with admin_required; anyone not logged in is sent to
+# /admin/login.
 
 def admin_required(view_func):
     @wraps(view_func)
     def wrapped(*args, **kwargs):
-        # TODO: add real authentication here (e.g. check session, API key).
+        if not session.get("is_admin"):
+            return redirect(url_for("admin_login", next=request.path))
         return view_func(*args, **kwargs)
     return wrapped
 
@@ -482,9 +491,43 @@ def ticket_status_json(ticket_id):
 # Routes: admin / counter operations
 # ---------------------------------------------------------------------------
 
+def _safe_next(target):
+    """Only allow redirects to paths inside this site."""
+    if target and target.startswith("/") and not target.startswith("//"):
+        return target
+    return url_for("admin")
+
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    next_url = request.values.get("next", "")
+    if request.method == "POST":
+        ip = request.remote_addr or "unknown"
+        if is_rate_limited("login:" + ip):
+            flash("Too many login attempts. Please wait a minute and try again.", "error")
+            return render_template("admin_login.html", next_url=next_url), 429
+        if not ADMIN_PASSWORD:
+            flash("Admin login is disabled: the ADMIN_PASSWORD environment variable is not set.", "error")
+            return render_template("admin_login.html", next_url=next_url)
+        supplied = request.form.get("password", "")
+        if hmac.compare_digest(supplied.encode(), ADMIN_PASSWORD.encode()):
+            session.clear()
+            session["is_admin"] = True
+            return redirect(_safe_next(next_url))
+        flash("Incorrect password.", "error")
+    return render_template("admin_login.html", next_url=next_url)
+
+
+@app.route("/admin/logout", methods=["POST"])
+def admin_logout():
+    session.clear()
+    return redirect(url_for("index"))
+
+
 @app.route("/admin")
-@admin_required
 def admin():
+    # Read-only for everyone; action buttons are shown only to logged-in admins,
+    # and every action route below still requires admin_required.
     db = get_db()
     waiting = waiting_list(db)
     serving = db.execute("SELECT * FROM ticket WHERE status='serving'").fetchall()

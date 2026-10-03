@@ -18,6 +18,7 @@ smart_queue/
 │   ├── index.html
 │   ├── ticket.html
 │   ├── admin.html
+│   ├── admin_login.html
 │   └── error.html
 ├── static/
 │   ├── css/
@@ -274,6 +275,10 @@ shown to the customer.
       Queue (moved to dead-letter) after exceeding the retry limit.
 - [ ] Check the "Dead-lettered" stat card increased by 1.
 
+**0. Admin protection**
+- [ ] Open `/admin` in a private window and confirm you see the dashboard with no action buttons and a "View-only mode" notice.
+- [ ] Log in via the notice link with `ADMIN_PASSWORD` and confirm the buttons appear.
+
 **6. Rate limiting**
 - [ ] Submit the Join form 6 times quickly (within 60 seconds) from the
       same browser/IP.
@@ -306,10 +311,27 @@ shown to the customer.
 
 ---
 
-## Notes on Authentication
+## Admin Authentication
 
-Admin authentication is intentionally not implemented in this prototype.
-Every admin route is wrapped with an `admin_required` decorator in
-`app.py` that currently does nothing — real authentication (session-based
-login, an API key, etc.) can be added there later without restructuring
-the routes.
+The `/admin` dashboard is **view-only for everyone** (queue, counters, serving
+list and stats). All actions (call next, complete, no-show, add/toggle counters)
+require the admin password, and their buttons are hidden until you log in.
+
+The password is read from the `ADMIN_PASSWORD` environment variable. If it is
+not set, admin login is disabled and nobody can get into the admin panel.
+
+**Locally (Windows Command Prompt), before `python app.py`:**
+```
+set ADMIN_PASSWORD=choose-a-strong-password
+```
+
+**On Render:** open your service, go to **Environment** > **Add Environment
+Variable**, and add:
+- `ADMIN_PASSWORD` = your chosen password
+- `SECRET_KEY` = any long random string (used to sign login sessions)
+
+Then save. Render redeploys automatically.
+
+Login attempts are rate-limited (5 per minute per IP). Use the **Log out**
+button in the header when you are done. This is a single shared password,
+suitable for a prototype or demo; for real use, switch to individual accounts.
