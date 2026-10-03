@@ -9,7 +9,14 @@
 <body>
 <header>
   <a class="title" href="{{ url_for('index') }}">🎫 Queue Management System</a>
-  <a href="{{ url_for('admin') }}">Admin Panel →</a>
+  <span>
+    <a href="{{ url_for('admin') }}">Admin Panel →</a>
+    {% if session.get('is_admin') %}
+    <form method="POST" action="{{ url_for('admin_logout') }}" style="display:inline; margin-left:14px;">
+      <button type="submit" style="margin:0; padding:5px 12px; background:rgba(255,255,255,0.2);">Log out</button>
+    </form>
+    {% endif %}
+  </span>
 </header>
 <main>
   {% with messages = get_flashed_messages(with_categories=true) %}

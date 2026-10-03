@@ -2,6 +2,9 @@
 {% block title %}Admin Panel{% endblock %}
 {% block content %}
 <h1>Admin Panel</h1>
+{% if not session.get('is_admin') %}
+<div class="flash flash-info">View-only mode. <a href="{{ url_for('admin_login') }}">Log in as admin</a> to manage the queue.</div>
+{% endif %}
 
 <div class="stats-grid">
   <div class="stat-box"><div class="num">{{ queue_length }}</div><div class="label">Waiting Now</div></div>
@@ -14,7 +17,7 @@
 <div class="card">
   <h3>Counters</h3>
   <table>
-    <tr><th>Name</th><th>Status</th><th>Currently Serving</th><th></th></tr>
+    <tr><th>Name</th><th>Status</th><th>Currently Serving</th>{% if session.get('is_admin') %}<th></th>{% endif %}</tr>
     {% for c in counters %}
     <tr>
       <td>{{ c.name }}</td>
@@ -24,25 +27,29 @@
         {% for s in serving %}{% if s.counter_id == c.id %}#{{ s.token_no }} ({{ s.name }}){% set found = true %}{% endif %}{% endfor %}
         {% if not found %}<span class="muted">—</span>{% endif %}
       </td>
+{% if session.get('is_admin') %}
       <td class="row-actions">
         <form method="POST" action="{{ url_for('toggle_counter', counter_id=c.id) }}">
           <button class="{{ 'btn-danger' if c.active else 'btn-success' }}">{{ "Deactivate" if c.active else "Activate" }}</button>
         </form>
       </td>
+      {% endif %}
     </tr>
     {% endfor %}
   </table>
+{% if session.get('is_admin') %}
   <form method="POST" action="{{ url_for('add_counter') }}" style="margin-top:14px; display:flex; gap:8px;">
     <input type="text" name="counter_name" maxlength="50" placeholder="New counter name" style="flex:1;">
     <button type="submit" class="btn-secondary" style="margin-top:0;">Add Counter</button>
   </form>
+  {% endif %}
 </div>
 
 <div class="card">
   <h3>Serving</h3>
   {% if serving %}
   <table>
-    <tr><th>Token</th><th>Name</th><th>Service</th><th>Counter</th><th>Called At</th><th></th></tr>
+    <tr><th>Token</th><th>Name</th><th>Service</th><th>Counter</th><th>Called At</th>{% if session.get('is_admin') %}<th></th>{% endif %}</tr>
     {% for t in serving %}
     <tr>
       <td>#{{ t.token_no }}</td>
@@ -50,17 +57,21 @@
       <td>{{ t.service_type }}</td>
       <td>{% for c in counters %}{% if c.id == t.counter_id %}{{ c.name }}{% endif %}{% endfor %}</td>
       <td class="muted">{{ t.called_at if t.called_at else '-' }}</td>
+{% if session.get('is_admin') %}
       <td class="row-actions">
         <form method="POST" action="{{ url_for('complete_ticket', ticket_id=t.id) }}"><button class="btn-success">Complete</button></form>
         <form method="POST" action="{{ url_for('no_show', ticket_id=t.id) }}"><button class="btn-warning">No-show</button></form>
       </td>
+      {% endif %}
     </tr>
     {% endfor %}
   </table>
   {% else %}
     <p class="muted">No one is being served right now.</p>
   {% endif %}
+{% if session.get('is_admin') %}
   <form method="POST" action="{{ url_for('call_next') }}"><button type="submit">Call Next Ticket</button></form>
+  {% endif %}
 </div>
 
 <div class="card">
