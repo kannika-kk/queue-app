@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Admin Panel{% endblock %}
+{% block content %}
+<h1>Admin Panel</h1>
+
+<div class="stats-grid">
+  <div class="stat-box"><div class="num">{{ queue_length }}</div><div class="label">Waiting Now</div></div>
+  <div class="stat-box"><div class="num">{{ serving|length }}</div><div class="label">Being Served</div></div>
+  <div class="stat-box"><div class="num">{{ completed_today }}</div><div class="label">Completed (24h)</div></div>
+  <div class="stat-box"><div class="num">{{ avg_wait }}m</div><div class="label">Avg Service Time</div></div>
+  <div class="stat-box"><div class="num">{{ dead_letter }}</div><div class="label">Dead-lettered</div></div>
+</div>
+
+<div class="card">
+  <h3>Counters</h3>
+  <table>
+    <tr><th>Name</th><th>Status</th><th>Currently Serving</th><th></th></tr>
+    {% for c in counters %}
+    <tr>
+      <td>{{ c.name }}</td>
+      <td>{{ "Active" if c.active else "Inactive" }}</td>
+      <td>
+        {% set found = false %}
+        {% for s in serving %}{% if s.counter_id == c.id %}#{{ s.token_no }} ({{ s.name }}){% set found = true %}{% endif %}{% endfor %}
+        {% if not found %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td class="row-actions">
+        <form method="POST" action="{{ url_for('toggle_counter', counter_id=c.id) }}">
+          <button class="{{ 'btn-danger' if c.active else 'btn-success' }}">{{ "Deactivate" if c.active else "Activate" }}</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <form method="POST" action="{{ url_for('add_counter') }}" style="margin-top:14px; display:flex; gap:8px;">
+    <input type="text" name="counter_name" maxlength="50" placeholder="New counter name" style="flex:1;">
+    <button type="submit" class="btn-secondary" style="margin-top:0;">Add Counter</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Serving</h3>
+  {% if serving %}
+  <table>
+    <tr><th>Token</th><th>Name</th><th>Service</th><th>Counter</th><th>Called At</th><th></th></tr>
+    {% for t in serving %}
+    <tr>
+      <td>#{{ t.token_no }}</td>
+      <td>{{ t.name }} {% if t.priority %}<span class="badge badge-vip">VIP</span>{% endif %}</td>
+      <td>{{ t.service_type }}</td>
+      <td>{% for c in counters %}{% if c.id == t.counter_id %}{{ c.name }}{% endif %}{% endfor %}</td>
+      <td class="muted">{{ t.called_at if t.called_at else '-' }}</td>
+      <td class="row-actions">
+        <form method="POST" action="{{ url_for('complete_ticket', ticket_id=t.id) }}"><button class="btn-success">Complete</button></form>
+        <form method="POST" action="{{ url_for('no_show', ticket_id=t.id) }}"><button class="btn-warning">No-show</button></form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+    <p class="muted">No one is being served right now.</p>
+  {% endif %}
+  <form method="POST" action="{{ url_for('call_next') }}"><button type="submit">Call Next Ticket</button></form>
+</div>
+
+<div class="card">
+  <h3>Waiting Queue</h3>
+  {% if waiting %}
+  <table>
+    <tr><th>#</th><th>Token</th><th>Name</th><th>Service</th><th>Type</th><th>Retries</th><th>Joined</th></tr>
+    {% for t in waiting %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td>#{{ t.token_no }}</td>
+      <td>{{ t.name }}</td>
+      <td>{{ t.service_type }}</td>
+      <td>{% if t.priority %}<span class="badge badge-vip">VIP</span>{% else %}<span class="badge badge-normal">Normal</span>{% endif %}</td>
+      <td>{{ t.retries }}</td>
+      <td class="muted">{{ t.created_at }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+    <p class="muted">Queue is empty.</p>
+  {% endif %}
+</div>
+{% endblock %}

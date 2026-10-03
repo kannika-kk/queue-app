@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Join Queue{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Join the Queue</h1>
+  <p class="muted">Enter your details to get a token. You'll be able to track your position live.</p>
+  <form method="POST" action="{{ url_for('join') }}">
+    <label>Name</label>
+    <input type="text" name="name" required maxlength="100" placeholder="Your name">
+    <label>Contact (email/phone, for notification)</label>
+    <input type="text" name="contact" maxlength="100" placeholder="optional">
+    <label>Service Type</label>
+    <select name="service_type" required>
+      {% for s in service_types %}
+      <option value="{{ s }}">{{ s }}</option>
+      {% endfor %}
+    </select>
+    <div class="checkbox-row">
+      <input type="checkbox" id="priority" name="priority">
+      <label for="priority" style="margin:0;">Priority / VIP request</label>
+    </div>
+    <button type="submit">Get My Token</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Current Queue ({{ waiting|length }} waiting)</h3>
+  {% if waiting %}
+  <table>
+    <tr><th>Token</th><th>Name</th><th>Service</th><th>Type</th><th>Joined</th></tr>
+    {% for t in waiting %}
+    <tr>
+      <td>#{{ t.token_no }}</td>
+      <td>{{ t.name }}</td>
+      <td>{{ t.service_type }}</td>
+      <td>{% if t.priority %}<span class="badge badge-vip">VIP</span>{% else %}<span class="badge badge-normal">Normal</span>{% endif %}</td>
+      <td class="muted">{{ t.created_at }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+    <p class="muted">No one is waiting right now.</p>
+  {% endif %}
+</div>
+{% endblock %}

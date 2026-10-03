@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Ticket #{{ ticket.token_no }}{% endblock %}
+{% block content %}
+<div class="card" style="text-align:center;">
+  <p class="muted">Your Token</p>
+  <h1 style="font-size:3rem; margin:0;">#{{ ticket.token_no }}</h1>
+  <p>{{ ticket.name }} &middot; {{ ticket.service_type }}
+    {% if ticket.priority %}<span class="badge badge-vip">VIP</span>{% endif %}
+  </p>
+
+  {% if ticket.status == "waiting" %}
+    <div class="badge badge-waiting" style="font-size:1rem; padding:8px 16px;">Waiting</div>
+    <p style="margin-top:16px;">Position in line: <strong>{{ position }}</strong></p>
+
+    {% if wait_estimate.mode == "tft" %}
+      <p class="muted">Estimated wait: {{ wait_estimate.p10 }}&ndash;{{ wait_estimate.p90 }} minutes</p>
+      <p><strong>Most likely: {{ wait_estimate.p50 }} minutes</strong></p>
+      <p class="muted" style="font-size:0.75rem;">(forecast by TFT model)</p>
+    {% else %}
+      <p class="muted">Estimated wait: ~{{ wait_estimate.minutes }} min</p>
+    {% endif %}
+
+    <form method="POST" action="{{ url_for('cancel_ticket', ticket_id=ticket.id) }}">
+      <button type="submit" class="btn-danger">Cancel my ticket</button>
+    </form>
+  {% elif ticket.status == "serving" %}
+    <div class="badge badge-serving" style="font-size:1rem; padding:8px 16px;">It's your turn!</div>
+    <p style="margin-top:16px;">Please proceed to your assigned counter.</p>
+  {% elif ticket.status == "done" %}
+    <p style="margin-top:16px; color:var(--success); font-weight:600;">✓ Service completed. Thank you!</p>
+  {% elif ticket.status == "cancelled" %}
+    <p style="margin-top:16px; color:var(--muted);">This ticket was cancelled.</p>
+  {% elif ticket.status == "dead_letter" %}
+    <p style="margin-top:16px; color:var(--danger);">This ticket was removed after repeated no-shows. Please join again.</p>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if ticket.status == "waiting" %}
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script>
+  startTicketPolling("{{ url_for('ticket_status_json', ticket_id=ticket.id) }}");
+</script>
+{% endif %}
+{% endblock %}
