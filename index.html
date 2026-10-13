@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% from "_doctor_badges.html" import type_badge, status_badge %}
+{% block title %}Join Queue{% endblock %}
+{% block content %}
+
+{% if doctors %}
+<div class="card">
+  <h3>Doctor Availability</h3>
+  <div class="table-scroll">
+  <table>
+    <tr><th>Doctor</th><th>Specialty</th><th>Days &amp; Timings</th><th>Today</th><th>Waiting</th></tr>
+    {% for d in doctors %}
+    <tr>
+      <td><strong>{{ d.name }}</strong><br>{{ type_badge(d) }}</td>
+      <td>{{ d.specialty }}</td>
+      <td>{{ d.days_text }}<br><span class="muted">{{ d.time_text }}</span></td>
+      <td>{{ status_badge(d) }}</td>
+      <td>{{ d.waiting }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <h1>Join the Queue</h1>
+  <p class="muted">Enter your details to get a token. You'll be able to track your position live.</p>
+  <form method="POST" action="{{ url_for('join') }}">
+    <label>Name</label>
+    <input type="text" name="name" required maxlength="100" placeholder="Your name">
+
+    {% if doctors_enabled %}
+    <label>Mobile number</label>
+    <input type="tel" name="contact" required inputmode="numeric" maxlength="16" placeholder="10-digit mobile number">
+    <p class="muted" style="margin:4px 0 0;">You can use this number later to look up your token.</p>
+
+    <label>Doctor type</label>
+    <select id="doctor_type">
+      <option value="">All doctors</option>
+      <option value="General">General physician</option>
+      <option value="Specialist">Specialist</option>
+    </select>
+
+    <label>Doctor</label>
+    <select name="doctor_id" id="doctor_id" required>
+      <option value="">Select a doctor</option>
+      {% for d in doctors if d.active %}
+      <option value="{{ d.id }}">{{ d.name }} — {{ d.specialty }}</option>
+      {% endfor %}
+    </select>
+    <p id="doctor_info" class="muted" style="margin:6px 0 0;"></p>
+    {% else %}
+    <label>Contact (email/phone, for notification)</label>
+    <input type="text" name="contact" maxlength="100" placeholder="optional">
+    <label>Service Type</label>
+    <select name="service_type" required>
+      {% for s in service_types %}
+      <option value="{{ s }}">{{ s }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="priority" name="priority">
+      <label for="priority" style="margin:0;">Priority / VIP request</label>
+    </div>
+    <button type="submit">Get My Token</button>
+  </form>
+  <p class="muted" style="margin-top:14px;">Already have a token? <a href="{{ url_for('track') }}">Find it with your mobile number</a>.</p>
+</div>
+
+<div class="card">
+  <h3>Current Queue ({{ waiting|length }} waiting)</h3>
+  {% if waiting %}
+  <div class="table-scroll">
+  <table>
+    <tr><th>Token</th><th>Name</th><th>{{ 'Doctor' if doctors_enabled else 'Service' }}</th><th>Type</th><th>Joined</th></tr>
+    {% for t in waiting %}
+    <tr>
+      <td>#{{ t.token_no }}</td>
+      <td>{{ t.name }}</td>
+      <td>{{ t.doctor_name or t.service_type }}</td>
+      <td>{% if t.priority %}<span class="badge badge-vip">VIP</span>{% else %}<span class="badge badge-normal">Normal</span>{% endif %}</td>
+      <td class="muted">{{ t.created_at }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}
+    <p class="muted">No one is waiting right now.</p>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if doctors_enabled %}
+<script>
+  const DOCTORS = {{ doctors_json|tojson }};
+  (function () {
+    const typeSel = document.getElementById("doctor_type");
+    const docSel = document.getElementById("doctor_id");
+    const info = document.getElementById("doctor_info");
+    if (!typeSel || !docSel || !info) return;
+
+    function showInfo() {
+      const d = DOCTORS.find(x => String(x.id) === docSel.value);
+      info.textContent = d
+        ? d.days_text + " · " + d.time_text + " · " + d.status_label + " · " + d.waiting + " waiting"
+        : "";
+    }
+    function render() {
+      const type = typeSel.value, current = docSel.value;
+      docSel.innerHTML = '<option value="">Select a doctor</option>';
+      DOCTORS.filter(d => d.active && (!type || d.type === type)).forEach(d => {
+        const o = document.createElement("option");
+        o.value = d.id;
+        o.textContent = d.name + " — " + d.specialty;
+        docSel.appendChild(o);
+      });
+      if (Array.prototype.some.call(docSel.options, o => o.value === current)) docSel.value = current;
+      showInfo();
+    }
+    typeSel.addEventListener("change", render);
+    docSel.addEventListener("change", showInfo);
+    render();
+  })();
+</script>
+{% endif %}
+{% endblock %}

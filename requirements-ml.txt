@@ -1,0 +1,13 @@
+# Install these ONLY on your own laptop to train/run the TFT model.
+# Do NOT add these to the main requirements.txt used for Render deployment -
+# they are large (PyTorch especially) and will fail to build on the free tier.
+#
+# Install with:
+#   pip install -r requirements-ml.txt
+
+torch>=2.0,<3.0
+pytorch-lightning>=2.0,<3.0
+pytorch-forecasting>=1.0,<2.0
+pandas>=2.0,<3.0
+numpy>=1.24,<2.0
+matplotlib>=3.7,<4.0

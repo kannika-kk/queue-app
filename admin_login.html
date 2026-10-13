@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Admin Login{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Admin Login</h1>
+  <p class="muted">Enter the admin password to manage the queue.</p>
+  <form method="POST" action="{{ url_for('admin_login') }}">
+    <input type="hidden" name="next" value="{{ next_url }}">
+    <label>Password</label>
+    <input type="password" name="password" required autofocus>
+    <button type="submit">Log in</button>
+  </form>
+</div>
+{% endblock %}
