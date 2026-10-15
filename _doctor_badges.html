@@ -1,7 +1,0 @@
-{# Shared little pieces for doctor rows. Usage: {% from "_doctor_badges.html" import type_badge, status_badge %} #}
-{% macro type_badge(d) -%}
-<span class="badge {{ 'badge-specialist' if d.doctor_type == 'Specialist' else 'badge-general' }}">{{ d.doctor_type }}</span>
-{%- endmacro %}
-{% macro status_badge(d) -%}
-<span class="badge badge-st-{{ d.status.state }}">{{ d.status.label }}</span>
-{%- endmacro %}
