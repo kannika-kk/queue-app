@@ -1,45 +1,157 @@
 {% extends "base.html" %}
+{% from "_badges.html" import kind_badge, status_badge %}
 {% block title %}Join Queue{% endblock %}
 {% block content %}
+
+{% if qmode != 'none' %}
+<div class="card">
+  <h3>{{ L.provider }} Availability</h3>
+  {% if providers %}
+  <div class="table-scroll">
+  <table>
+    <tr><th>{{ L.provider }}</th><th>{{ L.service }}</th><th>Days &amp; Timings</th><th>Today</th><th>Waiting</th></tr>
+    {% for p in providers %}
+    <tr>
+      <td><strong>{{ p.name }}</strong><br>{{ kind_badge(p) }}{% if p.location %} <span class="muted">{{ p.location }}</span>{% endif %}</td>
+      <td>{{ p.service_name }}</td>
+      <td>{{ p.days_text }}<br><span class="muted">{{ p.time_text }}</span></td>
+      <td>{{ status_badge(p) }}</td>
+      <td>{{ p.waiting }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}<p class="muted">Nobody has been added yet.</p>{% endif %}
+</div>
+{% else %}
+<div class="card">
+  <h3>{{ L.services }}</h3>
+  <div class="table-scroll">
+  <table>
+    <tr><th>{{ L.service }}</th><th>Waiting</th><th>Wait for a new token</th></tr>
+    {% for s in services if s.active %}
+    <tr><td><strong>{{ s.name }}</strong></td><td>{{ s.waiting }}</td><td>~{{ s.wait_minutes }} min</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <h1>Join the Queue</h1>
   <p class="muted">Enter your details to get a token. You'll be able to track your position live.</p>
   <form method="POST" action="{{ url_for('join') }}">
     <label>Name</label>
     <input type="text" name="name" required maxlength="100" placeholder="Your name">
-    <label>Contact (email/phone, for notification)</label>
-    <input type="text" name="contact" maxlength="100" placeholder="optional">
-    <label>Service Type</label>
-    <select name="service_type" required>
-      {% for s in service_types %}
-      <option value="{{ s }}">{{ s }}</option>
-      {% endfor %}
+
+    <label>Mobile number{% if not org.require_phone %} (optional){% endif %}</label>
+    <input type="tel" name="contact" {% if org.require_phone %}required{% endif %} inputmode="numeric" maxlength="16" placeholder="10-digit mobile number">
+    <p class="muted" style="margin:4px 0 0;">You can use this number later to look up your token.</p>
+
+    <label>{{ L.service }}</label>
+    <select name="service_id" id="service_id" required>
+      <option value="">Select a {{ L.service|lower }}</option>
+      {% for s in services if s.active %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
     </select>
+
+    {% if qmode != 'none' %}
+    <label>{{ L.provider }} type</label>
+    <select id="kind_filter">
+      <option value="">All</option>
+      <option value="standard">{{ L.kind_standard }}</option>
+      <option value="special">{{ L.kind_special }}</option>
+    </select>
+
+    <label>{{ L.provider }}</label>
+    <select name="provider_id" id="provider_id" {% if qmode == 'required' %}required{% endif %}></select>
+    <p id="provider_info" class="muted" style="margin:6px 0 0;"></p>
+    {% endif %}
+
+    <label>Alert me before my turn</label>
+    <select name="notify_minutes">
+      {% for m in notify_choices %}<option value="{{ m }}" {{ 'selected' if m == default_notify }}>{{ m }} minutes before</option>{% endfor %}
+    </select>
+
     <div class="checkbox-row">
       <input type="checkbox" id="priority" name="priority">
-      <label for="priority" style="margin:0;">Priority / VIP request</label>
+      <label for="priority" style="margin:0;">{{ L.priority }}</label>
     </div>
     <button type="submit">Get My Token</button>
   </form>
+  <p class="muted" style="margin-top:14px;">Already have a token? <a href="{{ url_for('track') }}">Find it with your mobile number</a>.</p>
 </div>
 
 <div class="card">
   <h3>Current Queue ({{ waiting|length }} waiting)</h3>
   {% if waiting %}
+  <div class="table-scroll">
   <table>
-    <tr><th>Token</th><th>Name</th><th>Service</th><th>Type</th><th>Joined</th></tr>
+    <tr><th>Token</th><th>Name</th><th>{{ L.service }}</th>{% if qmode != 'none' %}<th>{{ L.provider }}</th>{% endif %}<th>Type</th><th>Joined</th></tr>
     {% for t in waiting %}
     <tr>
       <td>#{{ t.token_no }}</td>
       <td>{{ t.name }}</td>
-      <td>{{ t.service_type }}</td>
-      <td>{% if t.priority %}<span class="badge badge-vip">VIP</span>{% else %}<span class="badge badge-normal">Normal</span>{% endif %}</td>
+      <td>{{ t.service_name or t.service_type }}</td>
+      {% if qmode != 'none' %}<td>{{ t.provider_name or 'Any available' }}</td>{% endif %}
+      <td>{% if t.priority %}<span class="badge badge-vip">Priority</span>{% else %}<span class="badge badge-normal">Normal</span>{% endif %}</td>
       <td class="muted">{{ t.created_at }}</td>
     </tr>
     {% endfor %}
   </table>
+  </div>
   {% else %}
     <p class="muted">No one is waiting right now.</p>
   {% endif %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+{% if qmode != 'none' %}
+<script>
+  const PROVIDERS = {{ providers_json|tojson }};
+  const MODE = {{ qmode|tojson }};
+  const PROVIDER_WORD = {{ L.provider|lower|tojson }};
+  (function () {
+    const serviceSel = document.getElementById("service_id");
+    const kindSel = document.getElementById("kind_filter");
+    const provSel = document.getElementById("provider_id");
+    const info = document.getElementById("provider_info");
+    if (!serviceSel || !kindSel || !provSel || !info) return;
+
+    function addOption(value, text) {
+      const o = document.createElement("option");
+      o.value = value; o.textContent = text; provSel.appendChild(o);
+    }
+    function showInfo() {
+      const p = PROVIDERS.find(x => String(x.id) === provSel.value);
+      if (p) {
+        info.textContent = [p.days_text, p.time_text, p.status_label, p.waiting + " waiting"].join(" · ");
+      } else if (MODE === "optional" && serviceSel.value) {
+        info.textContent = "The next free " + PROVIDER_WORD + " will call you.";
+      } else {
+        info.textContent = "";
+      }
+    }
+    function render() {
+      const current = provSel.value;
+      provSel.innerHTML = "";
+      if (!serviceSel.value) {
+        addOption("", "Select a service first");
+        showInfo();
+        return;
+      }
+      addOption("", MODE === "optional" ? "Any available" : "Select a " + PROVIDER_WORD);
+      PROVIDERS.filter(p => p.active && String(p.service_id) === serviceSel.value
+                            && (!kindSel.value || p.kind === kindSel.value))
+               .forEach(p => addOption(p.id, p.name + " (" + p.kind_label + ")"));
+      if (Array.prototype.some.call(provSel.options, o => o.value === current)) provSel.value = current;
+      showInfo();
+    }
+    serviceSel.addEventListener("change", render);
+    kindSel.addEventListener("change", render);
+    provSel.addEventListener("change", showInfo);
+    render();
+  })();
+</script>
+{% endif %}
 {% endblock %}

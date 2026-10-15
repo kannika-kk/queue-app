@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Settings</h1>
+  <p class="muted">Choose what kind of business this queue is for. The wording across the whole app changes to match.</p>
+  <form method="POST" action="{{ url_for('settings_page') }}" id="settingsForm">
+    <label>Organisation name</label>
+    <input type="text" name="org_name" required maxlength="80" value="{{ settings.org_name }}">
+
+    <label>Business type</label>
+    <div class="type-list">
+      {% for key, p in presets.items() %}
+      <label class="type-option">
+        <input type="radio" name="org_type" value="{{ key }}" {{ 'checked' if settings.org_type == key }}>
+        <span><strong>{{ p.title }}</strong><br>
+          <span class="muted">
+            {{ p.services }} &rarr; {% if p.mode == 'none' %}served at counters{% else %}{{ p.providers }}{% endif %}
+            {% if p.mode == 'required' %}(customer picks a {{ p.provider|lower }}){% elif p.mode == 'optional' %}(pick a {{ p.provider|lower }} or "Any available"){% endif %}
+          </span></span>
+      </label>
+      {% endfor %}
+    </div>
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="require_phone" name="require_phone" {{ 'checked' if settings.require_phone }}>
+      <label for="require_phone" style="margin:0;">Require a mobile number to get a token</label>
+    </div>
+
+    <div class="checkbox-row warn-box">
+      <input type="checkbox" id="load_samples" name="load_samples">
+      <label for="load_samples" style="margin:0;">Load the sample setup for this business type
+        <span class="muted">(deletes all current tickets, {{ L.providers|lower }}, services and counters)</span></label>
+    </div>
+
+    <button type="submit">Save settings</button>
+    <a class="btn btn-secondary" href="{{ url_for('admin') }}">Cancel</a>
+  </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.getElementById("settingsForm").addEventListener("submit", function (e) {
+    if (document.getElementById("load_samples").checked &&
+        !confirm("This deletes ALL current tickets, staff, services and counters and loads the sample setup. Continue?")) {
+      e.preventDefault();
+    }
+  });
+</script>
+{% endblock %}

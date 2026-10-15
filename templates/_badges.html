@@ -1,0 +1,7 @@
+{# Small shared pieces. Usage: {% from "_badges.html" import kind_badge, status_badge %} #}
+{% macro kind_badge(p) -%}
+<span class="badge {{ 'badge-special' if p.kind == 'special' else 'badge-standard' }}">{{ p.kind_label }}</span>
+{%- endmacro %}
+{% macro status_badge(p) -%}
+<span class="badge badge-st-{{ p.status.state }}">{{ p.status.label }}</span>
+{%- endmacro %}

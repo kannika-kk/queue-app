@@ -1,0 +1,27 @@
+{# Shared add/edit fields. 'prov' is a dict when editing, none when adding; 'svc_options' lists services. #}
+{% set sel_days = prov.days.split(',') if prov else ['Mon','Tue','Wed','Thu','Fri','Sat'] %}
+<label>{{ L.provider }} name</label>
+<input type="text" name="name" required maxlength="100" value="{{ prov.name if prov else '' }}">
+<label>{{ L.service }}</label>
+<select name="service_id" required>
+  {% for s in svc_options %}
+  <option value="{{ s.id }}" {{ 'selected' if prov and prov.service_id == s.id }}>{{ s.name }}</option>
+  {% endfor %}
+</select>
+<label>Type</label>
+<select name="kind">
+  <option value="standard" {{ 'selected' if prov and prov.kind == 'standard' }}>{{ L.kind_standard }}</option>
+  <option value="special" {{ 'selected' if prov and prov.kind == 'special' }}>{{ L.kind_special }}</option>
+</select>
+<label>Location (room / desk, optional)</label>
+<input type="text" name="location" maxlength="60" placeholder="e.g. Room 12" value="{{ prov.location if prov else '' }}">
+<label>Working days</label>
+<div class="days-row">
+  {% for d in day_names %}
+  <label class="day-pill"><input type="checkbox" name="days" value="{{ d }}" {{ 'checked' if d in sel_days }}> {{ d }}</label>
+  {% endfor %}
+</div>
+<div class="time-row">
+  <div><label>From</label><input type="time" name="start_time" required value="{{ prov.start_time if prov else '09:00' }}"></div>
+  <div><label>To</label><input type="time" name="end_time" required value="{{ prov.end_time if prov else '17:00' }}"></div>
+</div>

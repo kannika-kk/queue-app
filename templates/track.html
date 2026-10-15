@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "_badges.html" import kind_badge, status_badge %}
+{% block title %}Track Token{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Track Your Token</h1>
+  <p class="muted">Enter the mobile number you used when you joined to see the full details of your tokens.</p>
+  <form method="POST" action="{{ url_for('track') }}">
+    <label>Mobile number</label>
+    <input type="tel" name="phone" required inputmode="numeric" maxlength="16" placeholder="10-digit mobile number">
+    <button type="submit">Show my tokens</button>
+  </form>
+</div>
+
+{% if cards is not none %}
+  {% if cards %}
+  <p class="muted">Tokens for {{ phone_masked }} (latest first)</p>
+  {% for c in cards %}
+  {% set ticket = c.ticket %}{% set sp = c.shown_provider %}
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+      <div style="font-size:2rem; font-weight:800;">#{{ ticket.token_no }}</div>
+      <div>
+        {% if ticket.priority %}<span class="badge badge-vip">Priority</span>{% endif %}
+        {% if ticket.status == "waiting" %}<span class="badge badge-waiting">Waiting</span>
+        {% elif ticket.status == "serving" %}<span class="badge badge-serving">Your turn</span>
+        {% elif ticket.status == "done" %}<span class="badge badge-normal">Completed</span>
+        {% elif ticket.status == "cancelled" %}<span class="badge badge-normal">Cancelled</span>
+        {% else %}<span class="badge badge-st-leave">Removed (no-show)</span>{% endif %}
+      </div>
+    </div>
+    <table>
+      <tr><th style="width:38%;">{{ L.customer }}</th><td>{{ ticket.name }}</td></tr>
+      <tr><th>Mobile</th><td>{{ c.phone_masked or "—" }}</td></tr>
+      <tr><th>{{ L.service }}</th><td>{{ ticket.service_type }}</td></tr>
+      {% if sp %}
+      <tr><th>{{ L.provider }}</th><td>{{ sp.name }} {{ kind_badge(sp) }}</td></tr>
+      {% if sp.location %}<tr><th>Location</th><td>{{ sp.location }}</td></tr>{% endif %}
+      <tr><th>Timings</th><td>{{ sp.days_text }}<br><span class="muted">{{ sp.time_text }}</span></td></tr>
+      <tr><th>Today</th><td>{{ status_badge(sp) }}</td></tr>
+      {% elif qmode != 'none' %}
+      <tr><th>{{ L.provider }}</th><td>Any available</td></tr>
+      {% endif %}
+      {% if ticket.status == "waiting" %}
+      <tr><th>Position</th><td>{{ c.position }} in line</td></tr>
+      <tr><th>Est. wait</th><td>{% if c.wait_estimate.mode == "tft" %}{{ c.wait_estimate.p10 }}&ndash;{{ c.wait_estimate.p90 }} min{% else %}~{{ c.wait_estimate.minutes }} min{% endif %}</td></tr>
+      <tr><th>Alert</th><td>{{ ticket.notify_minutes }} min before your turn</td></tr>
+      {% elif ticket.status == "serving" %}
+      <tr><th>Go to</th><td>{% if c.served_by %}{{ c.served_by.location or c.served_by.name }}{% else %}{{ c.counter_name or "your assigned counter" }}{% endif %}</td></tr>
+      {% endif %}
+      <tr><th>Issued</th><td>{{ ticket.created_at|localtime }}</td></tr>
+    </table>
+    <p style="margin-bottom:0;">
+      <a class="btn" href="{{ url_for('ticket_status', ticket_id=ticket.id) }}">Live status</a>
+      <a class="btn btn-secondary" href="{{ url_for('print_token', ticket_id=ticket.id) }}">🖨 Print</a>
+    </p>
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="card"><p class="muted" style="margin:0;">No tokens found for this mobile number.</p></div>
+  {% endif %}
+{% endif %}
+{% endblock %}

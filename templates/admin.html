@@ -1,9 +1,11 @@
 {% extends "base.html" %}
-{% block title %}Admin Panel{% endblock %}
+{% from "_badges.html" import kind_badge, status_badge %}
+{% block title %}Staff Panel{% endblock %}
 {% block content %}
-<h1>Admin Panel</h1>
-{% if not session.get('is_admin') %}
-<div class="flash flash-info">View-only mode. <a href="{{ url_for('admin_login') }}">Log in as admin</a> to manage the queue.</div>
+{% set is_admin = session.get('is_admin') %}
+<h1>Staff Panel</h1>
+{% if not is_admin %}
+<div class="flash flash-info">View-only mode. <a href="{{ url_for('admin_login') }}">Log in as staff</a> to manage the queue.</div>
 {% endif %}
 
 <div class="stats-grid">
@@ -14,10 +16,99 @@
   <div class="stat-box"><div class="num">{{ dead_letter }}</div><div class="label">Dead-lettered</div></div>
 </div>
 
+{# ------------------------------------------------ providers (hospital, clinic, supermarket, bank) #}
+{% if qmode != 'none' %}
+<div class="card">
+  <h3>{{ L.providers }}</h3>
+  {% if providers %}
+  <div class="table-scroll">
+  <table>
+    <tr><th>{{ L.provider }}</th><th>Days &amp; Timings</th><th>Today</th><th>Waiting</th><th>Serving now</th>{% if is_admin %}<th></th>{% endif %}</tr>
+    {% for p in providers %}
+    <tr>
+      <td><strong>{{ p.name }}</strong><br>{{ kind_badge(p) }} <span class="muted">{{ p.service_name }}{% if p.location %} · {{ p.location }}{% endif %}</span></td>
+      <td>{{ p.days_text }}<br><span class="muted">{{ p.time_text }}</span></td>
+      <td>{{ status_badge(p) }}</td>
+      <td>{{ p.waiting }}{% if p.waiting_shared %} <span class="muted">({{ p.waiting_shared }} shared)</span>{% endif %}</td>
+      <td>{% if p.serving %}#{{ p.serving.token_no }} ({{ p.serving.name }}){% else %}<span class="muted">—</span>{% endif %}</td>
+      {% if is_admin %}
+      <td class="row-actions">
+        <form method="POST" action="{{ url_for('call_next') }}">
+          <input type="hidden" name="provider_id" value="{{ p.id }}">
+          <button type="submit">Call Next</button>
+        </form>
+        <a class="btn btn-secondary btn-small" href="{{ url_for('edit_provider', provider_id=p.id) }}">Edit</a>
+        <form method="POST" action="{{ url_for('toggle_provider', provider_id=p.id) }}">
+          <button class="{{ 'btn-danger' if p.active else 'btn-success' }}">{{ "Set unavailable" if p.active else "Activate" }}</button>
+        </form>
+      </td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}
+  <p class="muted">None added yet.</p>
+  {% endif %}
+
+  {% if is_admin %}
+  <details class="add-box">
+    <summary>➕ Add a {{ L.provider|lower }}</summary>
+    <form method="POST" action="{{ url_for('add_provider') }}">
+      {% set prov = none %}{% set svc_options = services %}
+      {% include "_provider_form.html" %}
+      <button type="submit">Add {{ L.provider|lower }}</button>
+    </form>
+  </details>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ------------------------------------------------ services #}
+<div class="card">
+  <h3>{{ L.services }}</h3>
+  <div class="table-scroll">
+  <table>
+    <tr><th>{{ L.service }}</th>{% if qmode != 'none' %}<th>{{ L.providers }}</th>{% endif %}<th>Waiting</th><th>Serving</th><th>Wait for a new token</th>{% if is_admin %}<th></th>{% endif %}</tr>
+    {% for s in services %}
+    <tr>
+      <td><strong>{{ s.name }}</strong>{% if not s.active %} <span class="badge badge-st-leave">Closed</span>{% endif %}</td>
+      {% if qmode != 'none' %}<td>{{ s.providers }}</td>{% endif %}
+      <td>{{ s.waiting }}</td>
+      <td>{{ s.serving }}</td>
+      <td>~{{ s.wait_minutes }} min</td>
+      {% if is_admin %}
+      <td class="row-actions">
+        {% if qmode == 'none' %}
+        <form method="POST" action="{{ url_for('call_next') }}">
+          <input type="hidden" name="service_id" value="{{ s.id }}">
+          <button type="submit">Call Next</button>
+        </form>
+        {% endif %}
+        <a class="btn btn-secondary btn-small" href="{{ url_for('edit_service', service_id=s.id) }}">Rename</a>
+        <form method="POST" action="{{ url_for('toggle_service', service_id=s.id) }}">
+          <button class="{{ 'btn-danger' if s.active else 'btn-success' }}">{{ "Close" if s.active else "Open" }}</button>
+        </form>
+      </td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% if is_admin %}
+  <form method="POST" action="{{ url_for('add_service') }}" style="margin-top:14px; display:flex; gap:8px;">
+    <input type="text" name="name" maxlength="60" required placeholder="New {{ L.service|lower }} name" style="flex:1;">
+    <button type="submit" class="btn-secondary" style="margin-top:0;">Add {{ L.service|lower }}</button>
+  </form>
+  {% endif %}
+</div>
+
+{# ------------------------------------------------ counters (shared-queue style) #}
+{% if qmode == 'none' %}
 <div class="card">
   <h3>Counters</h3>
   <table>
-    <tr><th>Name</th><th>Status</th><th>Currently Serving</th>{% if session.get('is_admin') %}<th></th>{% endif %}</tr>
+    <tr><th>Name</th><th>Status</th><th>Currently Serving</th>{% if is_admin %}<th></th>{% endif %}</tr>
     {% for c in counters %}
     <tr>
       <td>{{ c.name }}</td>
@@ -27,7 +118,7 @@
         {% for s in serving %}{% if s.counter_id == c.id %}#{{ s.token_no }} ({{ s.name }}){% set found = true %}{% endif %}{% endfor %}
         {% if not found %}<span class="muted">—</span>{% endif %}
       </td>
-{% if session.get('is_admin') %}
+      {% if is_admin %}
       <td class="row-actions">
         <form method="POST" action="{{ url_for('toggle_counter', counter_id=c.id) }}">
           <button class="{{ 'btn-danger' if c.active else 'btn-success' }}">{{ "Deactivate" if c.active else "Activate" }}</button>
@@ -37,27 +128,34 @@
     </tr>
     {% endfor %}
   </table>
-{% if session.get('is_admin') %}
+  {% if is_admin %}
   <form method="POST" action="{{ url_for('add_counter') }}" style="margin-top:14px; display:flex; gap:8px;">
     <input type="text" name="counter_name" maxlength="50" placeholder="New counter name" style="flex:1;">
     <button type="submit" class="btn-secondary" style="margin-top:0;">Add Counter</button>
   </form>
   {% endif %}
 </div>
+{% endif %}
 
+{# ------------------------------------------------ serving #}
 <div class="card">
   <h3>Serving</h3>
   {% if serving %}
+  <div class="table-scroll">
   <table>
-    <tr><th>Token</th><th>Name</th><th>Service</th><th>Counter</th><th>Called At</th>{% if session.get('is_admin') %}<th></th>{% endif %}</tr>
+    <tr><th>Token</th><th>{{ L.customer }}</th>{% if is_admin %}<th>Mobile</th>{% endif %}<th>{{ L.service }}</th><th>Served at</th><th>Called At</th>{% if is_admin %}<th></th>{% endif %}</tr>
     {% for t in serving %}
     <tr>
       <td>#{{ t.token_no }}</td>
-      <td>{{ t.name }} {% if t.priority %}<span class="badge badge-vip">VIP</span>{% endif %}</td>
-      <td>{{ t.service_type }}</td>
-      <td>{% for c in counters %}{% if c.id == t.counter_id %}{{ c.name }}{% endif %}{% endfor %}</td>
+      <td>{{ t.name }} {% if t.priority %}<span class="badge badge-vip">Priority</span>{% endif %}</td>
+      {% if is_admin %}<td>{{ t.contact or '—' }}</td>{% endif %}
+      <td>{{ t.service_name or t.service_type }}</td>
+      <td>
+        {% if t.provider_name %}{{ t.provider_name }}{% if t.provider_location %} <span class="muted">({{ t.provider_location }})</span>{% endif %}
+        {% else %}{% for c in counters %}{% if c.id == t.counter_id %}{{ c.name }}{% endif %}{% endfor %}{% endif %}
+      </td>
       <td class="muted">{{ t.called_at if t.called_at else '-' }}</td>
-{% if session.get('is_admin') %}
+      {% if is_admin %}
       <td class="row-actions">
         <form method="POST" action="{{ url_for('complete_ticket', ticket_id=t.id) }}"><button class="btn-success">Complete</button></form>
         <form method="POST" action="{{ url_for('no_show', ticket_id=t.id) }}"><button class="btn-warning">No-show</button></form>
@@ -66,31 +164,37 @@
     </tr>
     {% endfor %}
   </table>
+  </div>
   {% else %}
     <p class="muted">No one is being served right now.</p>
   {% endif %}
-{% if session.get('is_admin') %}
-  <form method="POST" action="{{ url_for('call_next') }}"><button type="submit">Call Next Ticket</button></form>
+  {% if is_admin and qmode == 'none' %}
+  <form method="POST" action="{{ url_for('call_next') }}"><button type="submit">Call Next Ticket (any service)</button></form>
   {% endif %}
 </div>
 
+{# ------------------------------------------------ waiting #}
 <div class="card">
   <h3>Waiting Queue</h3>
   {% if waiting %}
+  <div class="table-scroll">
   <table>
-    <tr><th>#</th><th>Token</th><th>Name</th><th>Service</th><th>Type</th><th>Retries</th><th>Joined</th></tr>
+    <tr><th>#</th><th>Token</th><th>{{ L.customer }}</th>{% if is_admin %}<th>Mobile</th>{% endif %}<th>{{ L.service }}</th>{% if qmode != 'none' %}<th>{{ L.provider }}</th>{% endif %}<th>Type</th><th>Retries</th><th>Joined</th></tr>
     {% for t in waiting %}
     <tr>
       <td>{{ loop.index }}</td>
       <td>#{{ t.token_no }}</td>
       <td>{{ t.name }}</td>
-      <td>{{ t.service_type }}</td>
-      <td>{% if t.priority %}<span class="badge badge-vip">VIP</span>{% else %}<span class="badge badge-normal">Normal</span>{% endif %}</td>
+      {% if is_admin %}<td>{{ t.contact or '—' }}</td>{% endif %}
+      <td>{{ t.service_name or t.service_type }}</td>
+      {% if qmode != 'none' %}<td>{{ t.provider_name or 'Any available' }}</td>{% endif %}
+      <td>{% if t.priority %}<span class="badge badge-vip">Priority</span>{% else %}<span class="badge badge-normal">Normal</span>{% endif %}</td>
       <td>{{ t.retries }}</td>
       <td class="muted">{{ t.created_at }}</td>
     </tr>
     {% endfor %}
   </table>
+  </div>
   {% else %}
     <p class="muted">Queue is empty.</p>
   {% endif %}

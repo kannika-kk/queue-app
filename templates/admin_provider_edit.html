@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ L.provider }}{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Edit {{ L.provider }}</h1>
+  <form method="POST" action="{{ url_for('edit_provider', provider_id=prov.id) }}">
+    {% set svc_options = service_options %}
+    {% include "_provider_form.html" %}
+    <button type="submit">Save changes</button>
+    <a class="btn btn-secondary" href="{{ url_for('admin') }}">Cancel</a>
+  </form>
+</div>
+{% endblock %}
