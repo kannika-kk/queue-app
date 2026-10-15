@@ -1,17 +1,21 @@
 """
-Smart Queue Management System
-------------------------------
-A Flask + SQLite queue management system with priority scheduling,
-round-robin load balancing, concurrency-safe ticket assignment, retry/
-dead-letter handling for no-shows, rate limiting, and wait-time estimation
-(baseline moving-average, with an optional Temporal Fusion Transformer
-upgrade for quantile-based forecasts).
+Smart Queue Management System  (multi-sector)
+---------------------------------------------
+A Flask + SQLite queue management system for hospitals, clinics, supermarkets,
+banks and offices. One engine, configured by a "business type" preset.
+
+Core features: priority scheduling, services with providers (doctors, counters,
+officers) and their availability, per-provider and shared queues, round-robin
+load balancing, concurrency-safe ticket assignment, retry/dead-letter handling
+for no-shows, rate limiting, mobile-number token lookup, printable tokens,
+time-based "your turn is near" notifications, and wait-time estimation
+(baseline formula, with an optional Temporal Fusion Transformer upgrade).
 
 Run locally:
     pip install -r requirements.txt
     python app.py
 Then open http://127.0.0.1:5000  (customer view)
-and   http://127.0.0.1:5000/admin (admin/counter view)
+and   http://127.0.0.1:5000/admin (staff view)
 
 See README.md for full setup, deployment, and testing instructions.
 
@@ -51,29 +55,105 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 DB_PATH = Path(__file__).parent / "queue.db"
 
 MAX_RETRIES = 2            # how many times a no-show gets re-queued
-NOTIFY_WINDOW = 2          # notify when this many people (or fewer) are ahead
+NOTIFY_WINDOW = 2          # (console log) people ahead that counts as "almost your turn"
 RATE_LIMIT_WINDOW = 60     # seconds
 RATE_LIMIT_MAX = 5         # max joins per IP per window
 RECENT_SERVICE_SAMPLE = 20 # how many past completed tickets to average
-
-SERVICE_TYPES = ["General Service", "Customer Support", "Billing", "Other"]
 TFT_ENCODER_LENGTH = 96    # TFT needs this many past 15-min buckets of history
 
-ORG_NAME = os.environ.get("ORG_NAME", "Smart Queue OPD")   # printed on token slips
-TIMEZONE = os.environ.get("TIMEZONE", "Asia/Kolkata")      # doctor timings + token times
+ORG_NAME = os.environ.get("ORG_NAME", "Smart Queue")       # default organisation name
+TIMEZONE = os.environ.get("TIMEZONE", "Asia/Kolkata")      # provider timings + token times
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-DOCTOR_TYPES = ["General", "Specialist"]
+KINDS = ("standard", "special")
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
-# Sample doctors, added only when the doctor table is empty (admins can edit them).
-# (name, type, specialty, working days, start, end)
-SAMPLE_DOCTORS = [
-    ("Dr. Anand Kumar", "General", "General Medicine", "Mon,Tue,Wed,Thu,Fri,Sat", "09:00", "17:00"),
-    ("Dr. Priya Nair", "Specialist", "Cardiology", "Mon,Wed,Fri", "10:00", "14:00"),
-    ("Dr. Rahul Mehta", "Specialist", "Dermatology", "Tue,Thu,Sat", "14:00", "18:00"),
-    ("Dr. Sana Iqbal", "Specialist", "Pediatrics", "Mon,Tue,Wed,Thu,Fri", "09:00", "13:00"),
-]
+NOTIFY_MINUTE_CHOICES = [2, 5, 10, 15, 20]   # "notify me N minutes before my turn"
+DEFAULT_NOTIFY_MINUTES = 5
+DEFAULT_ORG_TYPE = "hospital"
 
+MON_FRI = "Mon,Tue,Wed,Thu,Fri"
+MON_SAT = "Mon,Tue,Wed,Thu,Fri,Sat"
+EVERY_DAY = ",".join(DAY_NAMES)
+
+# ---------------------------------------------------------------------------
+# Business-type presets: wording + queue style + sample data.
+#   mode "required": the customer must pick a provider (hospital, clinic)
+#   mode "optional": the customer may pick a provider or "Any available"
+#   mode "none":     customers only pick a service; counters serve the queue
+# Sample providers: (name, kind, service, location, days, start, end)
+# ---------------------------------------------------------------------------
+PRESETS = {
+    "hospital": {
+        "title": "Hospital", "slip_title": "OPD TOKEN", "mode": "required",
+        "provider": "Doctor", "providers": "Doctors",
+        "service": "Department", "services": "Departments",
+        "customer": "Patient", "kind_standard": "General", "kind_special": "Specialist",
+        "priority": "Emergency / priority case",
+        "sample_services": ["General Medicine", "Cardiology", "Dermatology", "Pediatrics"],
+        "sample_providers": [
+            ("Dr. Anand Kumar", "standard", "General Medicine", "Room 1", MON_SAT, "09:00", "17:00"),
+            ("Dr. Priya Nair", "special", "Cardiology", "Room 2", "Mon,Wed,Fri", "10:00", "14:00"),
+            ("Dr. Rahul Mehta", "special", "Dermatology", "Room 3", "Tue,Thu,Sat", "14:00", "18:00"),
+            ("Dr. Sana Iqbal", "special", "Pediatrics", "Room 4", MON_FRI, "09:00", "13:00"),
+        ],
+        "sample_counters": ["Counter 1", "Counter 2"],
+    },
+    "clinic": {
+        "title": "Clinic", "slip_title": "CLINIC TOKEN", "mode": "required",
+        "provider": "Doctor", "providers": "Doctors",
+        "service": "Department", "services": "Departments",
+        "customer": "Patient", "kind_standard": "General", "kind_special": "Specialist",
+        "priority": "Emergency / priority case",
+        "sample_services": ["General Consultation", "Dental", "Eye Care"],
+        "sample_providers": [
+            ("Dr. Meera Das", "standard", "General Consultation", "Room A", MON_SAT, "09:00", "18:00"),
+            ("Dr. Arun Pillai", "special", "Dental", "Room B", "Mon,Wed,Fri", "10:00", "16:00"),
+            ("Dr. Lakshmi Rao", "special", "Eye Care", "Room C", "Tue,Thu,Sat", "10:00", "15:00"),
+        ],
+        "sample_counters": ["Counter 1", "Counter 2"],
+    },
+    "supermarket": {
+        "title": "Supermarket", "slip_title": "QUEUE TOKEN", "mode": "optional",
+        "provider": "Counter", "providers": "Counters",
+        "service": "Service", "services": "Services",
+        "customer": "Customer", "kind_standard": "Regular", "kind_special": "Express",
+        "priority": "Senior citizen / priority",
+        "sample_services": ["Billing", "Customer Service", "Returns & Exchange"],
+        "sample_providers": [
+            ("Counter 1", "standard", "Billing", "Billing Hall", EVERY_DAY, "08:00", "22:00"),
+            ("Counter 2", "standard", "Billing", "Billing Hall", EVERY_DAY, "08:00", "22:00"),
+            ("Express Counter (10 items or less)", "special", "Billing", "Billing Hall", EVERY_DAY, "08:00", "22:00"),
+            ("Customer Care Desk", "standard", "Customer Service", "Front Desk", EVERY_DAY, "09:00", "21:00"),
+            ("Returns Desk", "standard", "Returns & Exchange", "Front Desk", EVERY_DAY, "10:00", "20:00"),
+        ],
+        "sample_counters": ["Counter 1", "Counter 2"],
+    },
+    "bank": {
+        "title": "Bank", "slip_title": "BANK TOKEN", "mode": "optional",
+        "provider": "Counter", "providers": "Counters",
+        "service": "Service", "services": "Services",
+        "customer": "Customer", "kind_standard": "Regular", "kind_special": "Specialist",
+        "priority": "Senior citizen / priority",
+        "sample_services": ["Cash & Deposits", "Loans", "Account Services"],
+        "sample_providers": [
+            ("Counter 1", "standard", "Cash & Deposits", "Main Hall", MON_FRI, "10:00", "16:00"),
+            ("Counter 2", "standard", "Cash & Deposits", "Main Hall", MON_FRI, "10:00", "16:00"),
+            ("Loan Officer - Ms. Rao", "special", "Loans", "Cabin 1", MON_FRI, "10:00", "16:00"),
+            ("Account Desk", "standard", "Account Services", "Desk 1", MON_FRI, "10:00", "16:00"),
+        ],
+        "sample_counters": ["Counter 1", "Counter 2"],
+    },
+    "office": {
+        "title": "Office / Other", "slip_title": "TOKEN", "mode": "none",
+        "provider": "Staff", "providers": "Staff",
+        "service": "Service", "services": "Services",
+        "customer": "Customer", "kind_standard": "Regular", "kind_special": "Special",
+        "priority": "Priority / VIP request",
+        "sample_services": ["General Service", "Customer Support", "Billing", "Other"],
+        "sample_providers": [],
+        "sample_counters": ["Counter 1", "Counter 2"],
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Database connection handling
@@ -94,74 +174,104 @@ def close_db(exception=None):
         db.close()
 
 
+# ---------------------------------------------------------------------------
+# Database setup, settings and sample data
+# ---------------------------------------------------------------------------
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS counter (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS service (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS provider (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'standard',
+    service_id INTEGER NOT NULL,
+    location TEXT NOT NULL DEFAULT '',
+    days TEXT NOT NULL DEFAULT 'Mon,Tue,Wed,Thu,Fri,Sat,Sun',
+    start_time TEXT NOT NULL DEFAULT '09:00',
+    end_time TEXT NOT NULL DEFAULT '17:00',
+    active INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY (service_id) REFERENCES service(id)
+);
+
+CREATE TABLE IF NOT EXISTS ticket (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_no INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    contact TEXT,
+    service_type TEXT NOT NULL DEFAULT 'General Service',
+    service_id INTEGER,
+    provider_id INTEGER,
+    served_by INTEGER,
+    priority INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'waiting',
+    counter_id INTEGER,
+    retries INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    called_at TEXT,
+    completed_at TEXT,
+    notified INTEGER NOT NULL DEFAULT 0,
+    notify_minutes INTEGER NOT NULL DEFAULT 5,
+    FOREIGN KEY (counter_id) REFERENCES counter(id),
+    FOREIGN KEY (service_id) REFERENCES service(id),
+    FOREIGN KEY (provider_id) REFERENCES provider(id),
+    FOREIGN KEY (served_by) REFERENCES provider(id)
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_status ON ticket(status);
+CREATE INDEX IF NOT EXISTS idx_ticket_priority_created ON ticket(priority, created_at);
+CREATE INDEX IF NOT EXISTS idx_ticket_provider ON ticket(provider_id, status);
+CREATE INDEX IF NOT EXISTS idx_ticket_service ON ticket(service_id, status);
+CREATE INDEX IF NOT EXISTS idx_ticket_served_by ON ticket(served_by, status);
+CREATE INDEX IF NOT EXISTS idx_ticket_contact ON ticket(contact);
+"""
+
+
+def _is_old_layout(path):
+    """True if the file holds a database from before services/providers existed."""
+    if not Path(path).exists():
+        return False
+    con = sqlite3.connect(path)
+    try:
+        columns = [r[1] for r in con.execute("PRAGMA table_info(ticket)")]
+    finally:
+        con.close()
+    return bool(columns) and "service_id" not in columns
+
+
 def init_db():
-    """Create tables on first startup, upgrade older databases, and seed
-    sample counters and doctors if none exist."""
+    """Create tables on first startup and add the starter business setup.
+
+    A database created by an older version (different table layout) is not
+    modified: it is renamed to queue.db.old-<time> and a fresh one is created.
+    """
+    if _is_old_layout(DB_PATH):
+        backup = DB_PATH.with_name(DB_PATH.name + ".old-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+        DB_PATH.replace(backup)
+        print(f"[DB] Older database layout found. Saved as {backup.name}; starting a new database.")
     db = sqlite3.connect(DB_PATH)
-    db.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS counter (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            active INTEGER NOT NULL DEFAULT 1
-        );
-
-        CREATE TABLE IF NOT EXISTS doctor (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            doctor_type TEXT NOT NULL DEFAULT 'General',
-            specialty TEXT NOT NULL DEFAULT 'General Medicine',
-            days TEXT NOT NULL DEFAULT 'Mon,Tue,Wed,Thu,Fri,Sat',
-            start_time TEXT NOT NULL DEFAULT '09:00',
-            end_time TEXT NOT NULL DEFAULT '13:00',
-            active INTEGER NOT NULL DEFAULT 1
-        );
-
-        CREATE TABLE IF NOT EXISTS ticket (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            token_no INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            contact TEXT,
-            service_type TEXT NOT NULL DEFAULT 'General Service',
-            priority INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'waiting',
-            counter_id INTEGER,
-            retries INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            called_at TEXT,
-            completed_at TEXT,
-            notified INTEGER NOT NULL DEFAULT 0,
-            doctor_id INTEGER,
-            FOREIGN KEY (counter_id) REFERENCES counter(id),
-            FOREIGN KEY (doctor_id) REFERENCES doctor(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS meta (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_ticket_status ON ticket(status);
-        CREATE INDEX IF NOT EXISTS idx_ticket_priority_created
-            ON ticket(priority, created_at);
-        """
-    )
-    # Databases created before doctors existed: add the doctor link column.
-    columns = [r[1] for r in db.execute("PRAGMA table_info(ticket)")]
-    if "doctor_id" not in columns:
-        db.execute("ALTER TABLE ticket ADD COLUMN doctor_id INTEGER REFERENCES doctor(id)")
-    db.execute("CREATE INDEX IF NOT EXISTS idx_ticket_doctor ON ticket(doctor_id, status)")
-
-    row = db.execute("SELECT COUNT(*) AS c FROM counter").fetchone()
-    if row[0] == 0:
-        db.execute("INSERT INTO counter (name, active) VALUES ('Counter 1', 1)")
-        db.execute("INSERT INTO counter (name, active) VALUES ('Counter 2', 1)")
-    if db.execute("SELECT COUNT(*) FROM doctor").fetchone()[0] == 0:
-        db.executemany(
-            "INSERT INTO doctor (name, doctor_type, specialty, days, start_time, end_time, active) "
-            "VALUES (?, ?, ?, ?, ?, ?, 1)",
-            SAMPLE_DOCTORS,
-        )
+    db.row_factory = sqlite3.Row
+    db.executescript(SCHEMA)
+    if get_meta(db, "org_type") is None:        # first start: set up the default business
+        set_meta(db, "org_type", DEFAULT_ORG_TYPE)
+        set_meta(db, "org_name", ORG_NAME)
+        set_meta(db, "require_phone", "1")
+        load_sample_data(db, DEFAULT_ORG_TYPE)
     db.commit()
     db.close()
 
@@ -175,7 +285,46 @@ def parse_dt(s):
 
 
 # ---------------------------------------------------------------------------
-# Time, phone-number and doctor helpers
+# Settings and sample data
+# ---------------------------------------------------------------------------
+
+def get_settings(db):
+    org_type = get_meta(db, "org_type", DEFAULT_ORG_TYPE)
+    if org_type not in PRESETS:
+        org_type = DEFAULT_ORG_TYPE
+    return {
+        "org_name": get_meta(db, "org_name", ORG_NAME),
+        "org_type": org_type,
+        "require_phone": get_meta(db, "require_phone", "1") == "1",
+    }
+
+
+def load_sample_data(db, org_type):
+    """Replace ALL tickets, providers, services and counters with the sample
+    setup of the chosen business type (used on first start and from Settings)."""
+    preset = PRESETS[org_type]
+    db.execute("DELETE FROM ticket")
+    db.execute("DELETE FROM provider")
+    db.execute("DELETE FROM service")
+    db.execute("DELETE FROM counter")
+    db.execute("DELETE FROM meta WHERE key='last_counter_id'")
+    service_ids = {}
+    for name in preset["sample_services"]:
+        service_ids[name] = db.execute(
+            "INSERT INTO service (name, active) VALUES (?, 1)", (name,)
+        ).lastrowid
+    for name, kind, service, location, days, start, end in preset["sample_providers"]:
+        db.execute(
+            "INSERT INTO provider (name, kind, service_id, location, days, start_time, end_time, active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+            (name, kind, service_ids[service], location, days, start, end),
+        )
+    for name in preset["sample_counters"]:
+        db.execute("INSERT INTO counter (name, active) VALUES (?, 1)", (name,))
+
+
+# ---------------------------------------------------------------------------
+# Time, phone-number, provider and service helpers
 # ---------------------------------------------------------------------------
 
 def _tz():
@@ -213,6 +362,8 @@ def days_text(days_csv):
     idx = sorted({DAY_NAMES.index(d) for d in days_csv.split(",") if d in DAY_NAMES})
     if not idx:
         return "No days set"
+    if len(idx) == 7:
+        return "Every day"
     runs, start, prev = [], idx[0], idx[0]
     for i in idx[1:]:
         if i == prev + 1:
@@ -232,44 +383,19 @@ def days_text(days_csv):
     return ", ".join(parts)
 
 
-def doctor_status(doc, now=None):
-    """Where is this doctor right now? Returns {'state': ..., 'label': ...}."""
+def provider_status(p, now=None):
+    """Where is this provider (doctor, counter, ...) right now?"""
     now = now or local_now()
-    if not doc["active"]:
-        return {"state": "leave", "label": "On leave"}
-    if DAY_NAMES[now.weekday()] not in doc["days"].split(","):
+    if not p["active"]:
+        return {"state": "leave", "label": "Not available"}
+    if DAY_NAMES[now.weekday()] not in p["days"].split(","):
         return {"state": "off", "label": "Off today"}
     current = now.strftime("%H:%M")
-    if current < doc["start_time"]:
-        return {"state": "later", "label": f"Arrives at {fmt_time(doc['start_time'])}"}
-    if current >= doc["end_time"]:
+    if current < p["start_time"]:
+        return {"state": "later", "label": f"Arrives at {fmt_time(p['start_time'])}"}
+    if current >= p["end_time"]:
         return {"state": "ended", "label": "Done for today"}
     return {"state": "available", "label": "Available now"}
-
-
-def doctor_dict(db, row, now=None):
-    """A doctor row plus display text, today's status and queue numbers."""
-    d = dict(row)
-    d["days_text"] = days_text(d["days"])
-    d["time_text"] = f"{fmt_time(d['start_time'])} \u2013 {fmt_time(d['end_time'])}"
-    d["status"] = doctor_status(d, now)
-    d["waiting"] = db.execute(
-        "SELECT COUNT(*) AS c FROM ticket WHERE doctor_id=? AND status='waiting'", (d["id"],)
-    ).fetchone()["c"]
-    serving = db.execute(
-        "SELECT id, token_no, name FROM ticket WHERE doctor_id=? AND status='serving' LIMIT 1",
-        (d["id"],),
-    ).fetchone()
-    d["serving"] = dict(serving) if serving else None
-    return d
-
-
-def doctor_dicts(db):
-    now = local_now()
-    rows = db.execute(
-        "SELECT * FROM doctor ORDER BY CASE doctor_type WHEN 'General' THEN 0 ELSE 1 END, name"
-    ).fetchall()
-    return [doctor_dict(db, r, now) for r in rows]
 
 
 def normalize_phone(raw):
@@ -288,6 +414,75 @@ def mask_phone(contact):
     if contact and re.fullmatch(r"\d{10}", contact):
         return "******" + contact[-4:]
     return None
+
+
+def current_preset(db):
+    return PRESETS[get_settings(db)["org_type"]]
+
+
+@app.context_processor
+def inject_business():
+    """Makes the business wording (L), settings (org) and queue style (qmode)
+    available in every template."""
+    try:
+        settings = get_settings(get_db())
+    except Exception:
+        settings = {"org_name": ORG_NAME, "org_type": DEFAULT_ORG_TYPE, "require_phone": True}
+    preset = PRESETS[settings["org_type"]]
+    return {"L": preset, "org": settings, "qmode": preset["mode"]}
+
+
+def provider_dict(db, row, preset, now=None):
+    """A provider row plus display text, today's status and queue numbers."""
+    d = dict(row)
+    d["kind_label"] = preset["kind_special"] if d["kind"] == "special" else preset["kind_standard"]
+    d["days_text"] = days_text(d["days"])
+    d["time_text"] = f"{fmt_time(d['start_time'])} \u2013 {fmt_time(d['end_time'])}"
+    d["status"] = provider_status(d, now)
+    own = db.execute(
+        "SELECT COUNT(*) AS c FROM ticket WHERE provider_id=? AND status='waiting'", (d["id"],)
+    ).fetchone()["c"]
+    shared = db.execute(
+        "SELECT COUNT(*) AS c FROM ticket "
+        "WHERE provider_id IS NULL AND service_id=? AND status='waiting'", (d["service_id"],)
+    ).fetchone()["c"]
+    d["waiting_own"], d["waiting_shared"], d["waiting"] = own, shared, own + shared
+    serving = db.execute(
+        "SELECT id, token_no, name FROM ticket WHERE served_by=? AND status='serving' LIMIT 1",
+        (d["id"],),
+    ).fetchone()
+    d["serving"] = dict(serving) if serving else None
+    return d
+
+
+def provider_dicts(db):
+    preset, now = current_preset(db), local_now()
+    rows = db.execute(
+        """SELECT p.*, s.name AS service_name FROM provider p
+           JOIN service s ON s.id = p.service_id
+           ORDER BY s.name, CASE p.kind WHEN 'standard' THEN 0 ELSE 1 END, p.name"""
+    ).fetchall()
+    return [provider_dict(db, r, preset, now) for r in rows]
+
+
+def service_dict(db, row):
+    d = dict(row)
+    d["providers"] = db.execute(
+        "SELECT COUNT(*) AS c FROM provider WHERE service_id=? AND active=1", (d["id"],)
+    ).fetchone()["c"]
+    d["waiting"] = db.execute(
+        "SELECT COUNT(*) AS c FROM ticket WHERE service_id=? AND status='waiting'", (d["id"],)
+    ).fetchone()["c"]
+    d["serving"] = db.execute(
+        "SELECT COUNT(*) AS c FROM ticket WHERE service_id=? AND status='serving'", (d["id"],)
+    ).fetchone()["c"]
+    d["wait_minutes"] = service_wait_minutes(db, d["id"])
+    return d
+
+
+def service_dicts(db, only_active=False):
+    sql = "SELECT * FROM service" + (" WHERE active=1" if only_active else "") + " ORDER BY name"
+    return [service_dict(db, r) for r in db.execute(sql).fetchall()]
 
 
 # ---------------------------------------------------------------------------
@@ -334,29 +529,29 @@ def _average_duration(rows):
     return sum(durations) / len(durations) if durations else 180
 
 
-def avg_service_seconds(db, doctor_id=None):
+def _recent_done(db, where="", params=()):
+    return db.execute(
+        f"""SELECT called_at, completed_at FROM ticket
+            WHERE status='done' AND called_at IS NOT NULL AND completed_at IS NOT NULL {where}
+            ORDER BY completed_at DESC LIMIT ?""",
+        (*params, RECENT_SERVICE_SAMPLE),
+    ).fetchall()
+
+
+def avg_service_seconds(db, provider_id=None, service_id=None):
     """Average duration of the last RECENT_SERVICE_SAMPLE completed tickets.
-    With a doctor_id, that doctor's own recent consultations are used when
-    they have any; otherwise the overall average is used."""
-    if doctor_id is not None:
-        rows = db.execute(
-            """SELECT called_at, completed_at FROM ticket
-               WHERE status='done' AND doctor_id=?
-                 AND called_at IS NOT NULL AND completed_at IS NOT NULL
-               ORDER BY completed_at DESC LIMIT ?""",
-            (doctor_id, RECENT_SERVICE_SAMPLE),
-        ).fetchall()
+    Uses that provider's own recent tickets if given and available, else the
+    service's, else everyone's. Defaults to 3 minutes until data exists."""
+    if provider_id is not None:
+        rows = _recent_done(db, "AND served_by=?", (provider_id,))
         if rows:
             return _average_duration(rows)
-    rows = db.execute(
-        """SELECT called_at, completed_at FROM ticket
-           WHERE status='done' AND called_at IS NOT NULL AND completed_at IS NOT NULL
-           ORDER BY completed_at DESC LIMIT ?""",
-        (RECENT_SERVICE_SAMPLE,),
-    ).fetchall()
-    if not rows:
-        return 180  # default guess (3 min) until real data accumulates
-    return _average_duration(rows)
+    if service_id is not None:
+        rows = _recent_done(db, "AND service_id=?", (service_id,))
+        if rows:
+            return _average_duration(rows)
+    rows = _recent_done(db)
+    return _average_duration(rows) if rows else 180
 
 
 def active_counter_count(db):
@@ -364,11 +559,20 @@ def active_counter_count(db):
     return max(row["c"], 1)
 
 
-def count_ahead(db, priority, created_at, doctor_id=None, ticket_id=None):
-    """People waiting ahead of this ticket (in the same doctor's queue if a
-    doctor_id is given, otherwise in the whole queue). With a ticket_id,
-    tickets created in the same second are ordered by ticket number, the same
-    way "Call Next" orders them, so two people never share a position."""
+def active_provider_count(db, service_id):
+    return db.execute(
+        "SELECT COUNT(*) AS c FROM provider WHERE service_id=? AND active=1", (service_id,)
+    ).fetchone()["c"]
+
+
+def count_ahead(db, priority, created_at, provider_id=None, ticket_id=None, service_id=None):
+    """People waiting ahead of this ticket.
+      - provider_id given: that provider's own queue
+      - else service_id given: the shared queue of that service
+        (tickets that did not ask for a particular provider)
+      - neither: the whole queue
+    With a ticket_id, tickets created in the same second are ordered by ticket
+    number, the same way "Call Next" orders them, so nobody shares a position."""
     if ticket_id is not None:
         sql = """SELECT COUNT(*) AS c FROM ticket
                  WHERE status='waiting' AND (
@@ -383,23 +587,44 @@ def count_ahead(db, priority, created_at, doctor_id=None, ticket_id=None):
                      priority > ? OR (priority = ? AND created_at < ?)
                  )"""
         params = [priority, priority, created_at]
-    if doctor_id is not None:
-        sql += " AND doctor_id = ?"
-        params.append(doctor_id)
+    if provider_id is not None:
+        sql += " AND provider_id = ?"
+        params.append(provider_id)
+    elif service_id is not None:
+        sql += " AND provider_id IS NULL AND service_id = ?"
+        params.append(service_id)
     return db.execute(sql, params).fetchone()["c"]
 
 
-def estimate_wait_minutes(db, priority, created_at, doctor_id=None, ticket_id=None):
+def estimate_wait_seconds(db, priority, created_at, provider_id=None, ticket_id=None, service_id=None):
     """Baseline estimator:
-    estimated wait = (people ahead * avg service duration) / servers
-    where servers = active counters for the shared queue, or 1 for a single
-    doctor's queue (a doctor sees one patient at a time).
-    """
-    ahead = count_ahead(db, priority, created_at, doctor_id, ticket_id)
-    servers = 1 if doctor_id is not None else active_counter_count(db)
-    avg_seconds = avg_service_seconds(db, doctor_id)
-    seconds = (ahead * avg_seconds) / servers
-    return int(seconds // 60)
+        wait = (people ahead * average service time) / servers
+    servers = 1 for one provider's own queue; the number of active providers
+    for a service's shared queue (or active counters if the service has no
+    providers); active counters for the whole queue."""
+    ahead = count_ahead(db, priority, created_at, provider_id, ticket_id, service_id)
+    if provider_id is not None:
+        servers = 1
+    elif service_id is not None:
+        servers = active_provider_count(db, service_id) or active_counter_count(db)
+    else:
+        servers = active_counter_count(db)
+    avg_seconds = avg_service_seconds(db, provider_id, service_id)
+    return (ahead * avg_seconds) / servers
+
+
+def estimate_wait_minutes(db, priority, created_at, provider_id=None, ticket_id=None, service_id=None):
+    return int(estimate_wait_seconds(db, priority, created_at, provider_id, ticket_id, service_id) // 60)
+
+
+def service_wait_minutes(db, service_id):
+    """Rough wait for someone joining this service's shared queue right now."""
+    ahead = db.execute(
+        "SELECT COUNT(*) AS c FROM ticket "
+        "WHERE status='waiting' AND provider_id IS NULL AND service_id=?", (service_id,)
+    ).fetchone()["c"]
+    servers = active_provider_count(db, service_id) or active_counter_count(db)
+    return int((ahead * avg_service_seconds(db, None, service_id) / servers) // 60)
 
 
 def next_token(db):
@@ -463,15 +688,17 @@ def pick_counter(db):
 
 def waiting_list(db):
     return db.execute(
-        """SELECT t.*, d.name AS doctor_name FROM ticket t
-           LEFT JOIN doctor d ON d.id = t.doctor_id
+        """SELECT t.*, s.name AS service_name, p.name AS provider_name
+           FROM ticket t
+           LEFT JOIN service s ON s.id = t.service_id
+           LEFT JOIN provider p ON p.id = t.provider_id
            WHERE t.status='waiting'
            ORDER BY t.priority DESC, t.created_at ASC, t.id ASC"""
     ).fetchall()
 
 
 # ---------------------------------------------------------------------------
-# TFT wait-time estimation (optional, lazy-loaded)
+# Optional TFT forecasting (never imported at startup)
 # ---------------------------------------------------------------------------
 
 def build_recent_history_df(db, service_type):
@@ -554,7 +781,8 @@ def get_tft_wait_estimate(db, priority, created_at, service_type):
         return None
 
 
-def get_wait_estimate(db, priority, created_at, service_type, doctor_id=None, ticket_id=None):
+def get_wait_estimate(db, priority, created_at, service_type, provider_id=None,
+                      ticket_id=None, service_id=None):
     """
     Single entry point the routes call for a wait-time estimate. Tries TFT
     first; falls back to the baseline formula automatically and silently
@@ -568,7 +796,7 @@ def get_wait_estimate(db, priority, created_at, service_type, doctor_id=None, ti
         print(f"[WAIT-ESTIMATE] Using TFT prediction: {tft_result}")
         return {"mode": "tft", **tft_result}
 
-    minutes = estimate_wait_minutes(db, priority, created_at, doctor_id, ticket_id)
+    minutes = estimate_wait_minutes(db, priority, created_at, provider_id, ticket_id, service_id)
     print(f"[WAIT-ESTIMATE] Using baseline moving-average estimate: {minutes} min")
     return {"mode": "baseline", "minutes": minutes}
 
@@ -577,55 +805,78 @@ def get_wait_estimate(db, priority, created_at, service_type, doctor_id=None, ti
 # Routes: customer-facing
 # ---------------------------------------------------------------------------
 
+def _load_provider(db, provider_id, preset, now=None):
+    if provider_id is None:
+        return None
+    row = db.execute(
+        "SELECT p.*, s.name AS service_name FROM provider p "
+        "JOIN service s ON s.id = p.service_id WHERE p.id=?", (provider_id,)
+    ).fetchone()
+    return provider_dict(db, row, preset, now) if row else None
+
+
 def build_ticket_context(db, ticket):
     """Everything a page needs to show one token."""
-    doctor = None
-    if ticket["doctor_id"] is not None:
-        row = db.execute("SELECT * FROM doctor WHERE id=?", (ticket["doctor_id"],)).fetchone()
-        if row is not None:
-            doctor = doctor_dict(db, row)
-    position = wait_estimate = counter_name = None
+    preset, now = current_preset(db), local_now()
+    service = None
+    if ticket["service_id"] is not None:
+        row = db.execute("SELECT * FROM service WHERE id=?", (ticket["service_id"],)).fetchone()
+        service = dict(row) if row else None
+    requested = _load_provider(db, ticket["provider_id"], preset, now)
+    served_by = _load_provider(db, ticket["served_by"], preset, now)
+
+    position = wait_estimate = eta_seconds = counter_name = None
     if ticket["status"] == "waiting":
-        position = count_ahead(
-            db, ticket["priority"], ticket["created_at"], ticket["doctor_id"], ticket["id"]
-        ) + 1
+        scope = (ticket["provider_id"], ticket["id"], ticket["service_id"])
+        position = count_ahead(db, ticket["priority"], ticket["created_at"], *scope) + 1
         wait_estimate = get_wait_estimate(
-            db, ticket["priority"], ticket["created_at"], ticket["service_type"],
-            ticket["doctor_id"], ticket["id"],
+            db, ticket["priority"], ticket["created_at"], ticket["service_type"], *scope
         )
+        eta_seconds = int(estimate_wait_seconds(db, ticket["priority"], ticket["created_at"], *scope))
     if ticket["status"] == "serving" and ticket["counter_id"] is not None:
         c = db.execute("SELECT name FROM counter WHERE id=?", (ticket["counter_id"],)).fetchone()
         counter_name = c["name"] if c else None
     return {
         "ticket": ticket,
-        "doctor": doctor,
+        "service": service,
+        "provider": requested,            # the provider the customer asked for (None = any)
+        "served_by": served_by,           # the provider who called the ticket
+        "shown_provider": served_by or requested,
         "position": position,
         "wait_estimate": wait_estimate,
+        "eta_seconds": eta_seconds,
         "counter_name": counter_name,
         "phone_masked": mask_phone(ticket["contact"]),
+        "notify_choices": NOTIFY_MINUTE_CHOICES,
     }
 
 
 @app.route("/")
 def index():
     db = get_db()
-    doctors = doctor_dicts(db)
-    doctors_json = [
+    preset = current_preset(db)
+    services = service_dicts(db)
+    providers = provider_dicts(db)
+    providers_json = [
         {
-            "id": d["id"], "name": d["name"], "type": d["doctor_type"],
-            "specialty": d["specialty"], "days_text": d["days_text"],
-            "time_text": d["time_text"], "status_label": d["status"]["label"],
-            "waiting": d["waiting"], "active": bool(d["active"]),
+            "id": p["id"], "name": p["name"], "kind": p["kind"], "kind_label": p["kind_label"],
+            "service_id": p["service_id"], "location": p["location"],
+            "days_text": p["days_text"], "time_text": p["time_text"],
+            "status_label": p["status"]["label"], "waiting": p["waiting"],
+            "active": bool(p["active"]),
         }
-        for d in doctors
+        for p in providers
     ]
+    services_json = [{"id": s["id"], "name": s["name"]} for s in services if s["active"]]
     return render_template(
         "index.html",
         waiting=waiting_list(db),
-        service_types=SERVICE_TYPES,
-        doctors=doctors,
-        doctors_json=doctors_json,
-        doctors_enabled=any(d["active"] for d in doctors),
+        services=services,
+        providers=providers,
+        services_json=services_json,
+        providers_json=providers_json,
+        notify_choices=NOTIFY_MINUTE_CHOICES,
+        default_notify=DEFAULT_NOTIFY_MINUTES,
     )
 
 
@@ -638,58 +889,72 @@ def join():
 
     name = request.form.get("name", "").strip()
     contact = request.form.get("contact", "").strip()
-    service_type = request.form.get("service_type", "").strip()
     priority = 1 if request.form.get("priority") == "on" else 0
-    doctor_id = request.form.get("doctor_id", type=int)
+    service_id = request.form.get("service_id", type=int)
+    provider_id = request.form.get("provider_id", type=int)
+    notify_minutes = request.form.get("notify_minutes", type=int)
+    if notify_minutes not in NOTIFY_MINUTE_CHOICES:
+        notify_minutes = DEFAULT_NOTIFY_MINUTES
+
+    db = get_db()
+    settings = get_settings(db)
+    preset = PRESETS[settings["org_type"]]
+    mode = preset["mode"]
+    service_word, provider_word = preset["service"].lower(), preset["provider"].lower()
+
+    def fail(message):
+        flash(message, "error")
+        return redirect(url_for("index"))
 
     # --- input validation ---
     if not name:
-        flash("Name is required.", "error")
-        return redirect(url_for("index"))
+        return fail("Name is required.")
     if len(name) > 100:
-        flash("Name is too long (max 100 characters).", "error")
-        return redirect(url_for("index"))
+        return fail("Name is too long (max 100 characters).")
 
-    db = get_db()
-    active_doctors = db.execute("SELECT * FROM doctor WHERE active=1").fetchall()
-    if active_doctors:
-        # Doctor mode: the patient picks a doctor and gives a mobile number.
-        doctor = next((d for d in active_doctors if d["id"] == doctor_id), None)
-        if doctor is None:
-            flash("Please select an available doctor.", "error")
-            return redirect(url_for("index"))
+    service = None
+    if service_id is not None:
+        service = db.execute("SELECT * FROM service WHERE id=? AND active=1", (service_id,)).fetchone()
+    if service is None:
+        return fail(f"Please select a {service_word}.")
+
+    provider = None
+    if mode != "none":
+        providers = db.execute(
+            "SELECT * FROM provider WHERE service_id=? AND active=1", (service["id"],)
+        ).fetchall()
+        if not providers:
+            return fail(f"No {provider_word} is available for this {service_word} right now.")
+        if provider_id is not None:
+            provider = next((p for p in providers if p["id"] == provider_id), None)
+            if provider is None:
+                return fail(f"Please select an available {provider_word}.")
+        elif mode == "required":
+            return fail(f"Please select a {provider_word}.")
+
+    phone = None
+    if contact or settings["require_phone"]:
         phone = normalize_phone(contact)
         if phone is None:
-            flash("Please enter a valid 10-digit mobile number.", "error")
-            return redirect(url_for("index"))
+            return fail("Please enter a valid 10-digit mobile number.")
         existing = db.execute(
             "SELECT id, token_no FROM ticket "
-            "WHERE contact=? AND doctor_id=? AND status IN ('waiting','serving') LIMIT 1",
-            (phone, doctor["id"]),
+            "WHERE contact=? AND service_id=? AND status IN ('waiting','serving') LIMIT 1",
+            (phone, service["id"]),
         ).fetchone()
         if existing:
-            flash(f"You already have an active token (#{existing['token_no']}) with {doctor['name']}.", "info")
+            flash(f"You already have an active token (#{existing['token_no']}) for {service['name']}.", "info")
             return redirect(url_for("ticket_status", ticket_id=existing["id"]))
-        contact = phone
-        service_type = doctor["specialty"]
-        doctor_pk = doctor["id"]
-    else:
-        # No doctors set up: behave like the plain queue system.
-        if contact and len(contact) > 100:
-            flash("Contact is too long (max 100 characters).", "error")
-            return redirect(url_for("index"))
-        if service_type not in SERVICE_TYPES:
-            flash("Please select a valid service type.", "error")
-            return redirect(url_for("index"))
-        doctor_pk = None
 
     try:
         token_no = next_token(db)
         cur = db.execute(
             """INSERT INTO ticket
-               (token_no, name, contact, service_type, priority, status, created_at, doctor_id)
-               VALUES (?, ?, ?, ?, ?, 'waiting', ?, ?)""",
-            (token_no, name, contact, service_type, priority, now_iso(), doctor_pk),
+               (token_no, name, contact, service_type, service_id, provider_id,
+                priority, status, created_at, notify_minutes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', ?, ?)""",
+            (token_no, name, phone, service["name"], service["id"],
+             provider["id"] if provider else None, priority, now_iso(), notify_minutes),
         )
         db.commit()
     except sqlite3.Error as e:
@@ -707,16 +972,35 @@ def ticket_status(ticket_id):
         abort(404, description="Ticket not found.")
 
     ctx = build_ticket_context(db, ticket)
-    position = ctx["position"]
-    if ticket["status"] == "waiting":
-        # simulated notification when close to being served
-        if position <= NOTIFY_WINDOW and not ticket["notified"]:
+    if ticket["status"] == "waiting" and not ticket["notified"]:
+        near = ctx["position"] <= NOTIFY_WINDOW or ctx["eta_seconds"] <= ticket["notify_minutes"] * 60
+        if near:
             db.execute("UPDATE ticket SET notified=1 WHERE id=?", (ticket_id,))
             db.commit()
             print(f"[NOTIFY] {ticket['name']} ({ticket['contact']}): "
-                  f"You're #{position} in line, almost your turn!")
+                  f"You're #{ctx['position']} in line, about {ctx['eta_seconds'] // 60} min to go.")
 
     return render_template("ticket.html", **ctx)
+
+
+@app.route("/ticket/<int:ticket_id>/notify", methods=["POST"])
+def set_notify_minutes(ticket_id):
+    """Let the customer choose how many minutes before their turn to be alerted."""
+    db = get_db()
+    ticket = db.execute("SELECT id FROM ticket WHERE id=?", (ticket_id,)).fetchone()
+    if ticket is None:
+        abort(404, description="Ticket not found.")
+    minutes = request.form.get("minutes", type=int)
+    if minutes not in NOTIFY_MINUTE_CHOICES:
+        flash("Please choose one of the listed times.", "error")
+    else:
+        db.execute(
+            "UPDATE ticket SET notify_minutes=?, notified=0 WHERE id=? AND status='waiting'",
+            (minutes, ticket_id),
+        )
+        db.commit()
+        flash(f"We'll alert you about {minutes} minutes before your turn.", "info")
+    return redirect(url_for("ticket_status", ticket_id=ticket_id))
 
 
 @app.route("/ticket/<int:ticket_id>/print")
@@ -728,8 +1012,7 @@ def print_token(ticket_id):
         abort(404, description="Ticket not found.")
     ctx = build_ticket_context(db, ticket)
     return render_template(
-        "print.html", org_name=ORG_NAME,
-        printed_at=local_now().strftime("%d %b %Y, %I:%M %p").lstrip("0"), **ctx
+        "print.html", printed_at=local_now().strftime("%d %b %Y, %I:%M %p").lstrip("0"), **ctx
     )
 
 
@@ -775,16 +1058,18 @@ def ticket_status_json(ticket_id):
     ticket = db.execute("SELECT * FROM ticket WHERE id=?", (ticket_id,)).fetchone()
     if ticket is None:
         return jsonify(error="Ticket not found"), 404
-    position = None
+    position = eta_seconds = notify_minutes = None
     if ticket["status"] == "waiting":
-        position = count_ahead(
-            db, ticket["priority"], ticket["created_at"], ticket["doctor_id"], ticket["id"]
-        ) + 1
-    return jsonify(status=ticket["status"], position=position)
+        scope = (ticket["provider_id"], ticket["id"], ticket["service_id"])
+        position = count_ahead(db, ticket["priority"], ticket["created_at"], *scope) + 1
+        eta_seconds = int(estimate_wait_seconds(db, ticket["priority"], ticket["created_at"], *scope))
+        notify_minutes = ticket["notify_minutes"]
+    return jsonify(status=ticket["status"], position=position,
+                   eta_seconds=eta_seconds, notify_minutes=notify_minutes)
 
 
 # ---------------------------------------------------------------------------
-# Routes: admin / counter operations
+# Routes: staff / admin
 # ---------------------------------------------------------------------------
 
 def _safe_next(target):
@@ -827,12 +1112,14 @@ def admin():
     db = get_db()
     waiting = waiting_list(db)
     serving = db.execute(
-        """SELECT t.*, d.name AS doctor_name FROM ticket t
-           LEFT JOIN doctor d ON d.id = t.doctor_id
+        """SELECT t.*, s.name AS service_name, p.name AS provider_name,
+                  p.location AS provider_location
+           FROM ticket t
+           LEFT JOIN service s ON s.id = t.service_id
+           LEFT JOIN provider p ON p.id = t.served_by
            WHERE t.status='serving'"""
     ).fetchall()
     counters = db.execute("SELECT * FROM counter ORDER BY id ASC").fetchall()
-    doctors = doctor_dicts(db)
 
     since = (datetime.utcnow() - timedelta(hours=24)).isoformat(timespec="seconds")
     completed_today = db.execute(
@@ -849,7 +1136,8 @@ def admin():
         waiting=waiting,
         serving=serving,
         counters=counters,
-        doctors=doctors,
+        services=service_dicts(db),
+        providers=provider_dicts(db),
         day_names=DAY_NAMES,
         completed_today=completed_today,
         dead_letter=dead_letter,
@@ -861,52 +1149,85 @@ def admin():
 @app.route("/admin/call_next", methods=["POST"])
 @admin_required
 def call_next():
-    """Call the next waiting ticket - from one doctor's queue if a doctor_id
-    is submitted, otherwise from the whole queue."""
+    """Call the next waiting ticket.
+      - with provider_id: for that provider (their own queue and their
+        service's shared queue; one customer at a time)
+      - with service_id:  from that service's shared queue, onto a counter
+      - with neither:     from the shared queue of any service, onto a counter
+    """
     db = get_db()
-    doctor_id = request.form.get("doctor_id", type=int)
-    doctor = None
-    if doctor_id is not None:
-        doctor = db.execute("SELECT * FROM doctor WHERE id=?", (doctor_id,)).fetchone()
-        if doctor is None:
-            abort(404, description="Doctor not found.")
+    provider_id = request.form.get("provider_id", type=int)
+    service_id = request.form.get("service_id", type=int)
+
+    if provider_id is not None:
+        provider = db.execute("SELECT * FROM provider WHERE id=?", (provider_id,)).fetchone()
+        if provider is None:
+            abort(404, description="Not found.")
         busy = db.execute(
-            "SELECT token_no FROM ticket WHERE doctor_id=? AND status='serving' LIMIT 1",
-            (doctor_id,),
+            "SELECT token_no FROM ticket WHERE served_by=? AND status='serving' LIMIT 1",
+            (provider_id,),
         ).fetchone()
         if busy:
-            flash(f"{doctor['name']} is already seeing token #{busy['token_no']}. "
+            flash(f"{provider['name']} is already serving token #{busy['token_no']}. "
                   f"Complete that token first.", "error")
             return redirect(url_for("admin"))
+        next_ticket = db.execute(
+            """SELECT * FROM ticket WHERE status='waiting'
+                 AND (provider_id = ? OR (provider_id IS NULL AND service_id = ?))
+               ORDER BY priority DESC, created_at ASC, id ASC LIMIT 1""",
+            (provider_id, provider["service_id"]),
+        ).fetchone()
+        if not next_ticket:
+            flash(f"No one is waiting for {provider['name']}.", "info")
+            return redirect(url_for("admin"))
+        # Atomic: only succeeds if the ticket is still waiting AND this provider
+        # has nobody serving, so simultaneous clicks cannot double-assign.
+        try:
+            cur = db.execute(
+                """UPDATE ticket SET status='serving', served_by=?, counter_id=NULL, called_at=?
+                   WHERE id=? AND status='waiting'
+                     AND NOT EXISTS (SELECT 1 FROM ticket t2
+                                     WHERE t2.served_by=? AND t2.status='serving')""",
+                (provider_id, now_iso(), next_ticket["id"], provider_id),
+            )
+            db.commit()
+        except sqlite3.Error as e:
+            flash(f"Database error while calling next ticket: {e}", "error")
+            return redirect(url_for("admin"))
+        if cur.rowcount == 0:
+            flash("That ticket was already taken.", "error")
+        return redirect(url_for("admin"))
+
+    # --- shared queue, served at a counter ---
+    if service_id is not None and db.execute(
+        "SELECT id FROM service WHERE id=?", (service_id,)
+    ).fetchone() is None:
+        abort(404, description="Not found.")
 
     counter = pick_counter(db)
     if not counter:
         flash("No active counters available.", "error")
         return redirect(url_for("admin"))
 
-    sql = "SELECT * FROM ticket WHERE status='waiting'"
+    sql = "SELECT * FROM ticket WHERE status='waiting' AND provider_id IS NULL"
     params = []
-    if doctor_id is not None:
-        sql += " AND doctor_id=?"
-        params.append(doctor_id)
+    if service_id is not None:
+        sql += " AND service_id=?"
+        params.append(service_id)
     sql += " ORDER BY priority DESC, created_at ASC, id ASC LIMIT 1"
     next_ticket = db.execute(sql, params).fetchone()
     if not next_ticket:
-        flash("Queue is empty." if doctor is None else f"No one is waiting for {doctor['name']}.", "info")
+        flash("Queue is empty.", "info")
         return redirect(url_for("admin"))
 
     # Atomic conditional update: only succeeds if still 'waiting', so two
     # simultaneous "Call Next" clicks can never assign the same ticket twice.
-    # For a doctor, it also only succeeds while that doctor has nobody serving.
-    update_sql = ("UPDATE ticket SET status='serving', counter_id=?, called_at=? "
-                  "WHERE id=? AND status='waiting'")
-    update_params = [counter["id"], now_iso(), next_ticket["id"]]
-    if doctor_id is not None:
-        update_sql += (" AND NOT EXISTS (SELECT 1 FROM ticket t2 "
-                       "WHERE t2.doctor_id=? AND t2.status='serving')")
-        update_params.append(doctor_id)
     try:
-        cur = db.execute(update_sql, update_params)
+        cur = db.execute(
+            "UPDATE ticket SET status='serving', counter_id=?, called_at=? "
+            "WHERE id=? AND status='waiting'",
+            (counter["id"], now_iso(), next_ticket["id"]),
+        )
         db.commit()
     except sqlite3.Error as e:
         flash(f"Database error while calling next ticket: {e}", "error")
@@ -925,7 +1246,7 @@ def complete_ticket(ticket_id):
     if ticket is None:
         abort(404, description="Ticket not found.")
     db.execute(
-        "UPDATE ticket SET status='done', completed_at=? WHERE id=?",
+        "UPDATE ticket SET status='done', completed_at=? WHERE id=? AND status='serving'",
         (now_iso(), ticket_id),
     )
     db.commit()
@@ -944,13 +1265,13 @@ def no_show(ticket_id):
     retries = ticket["retries"] + 1
     if retries > MAX_RETRIES:
         db.execute(
-            "UPDATE ticket SET status='dead_letter', retries=? WHERE id=?",
+            "UPDATE ticket SET status='dead_letter', retries=? WHERE id=? AND status='serving'",
             (retries, ticket_id),
         )
     else:
         db.execute(
-            "UPDATE ticket SET status='waiting', counter_id=NULL, called_at=NULL, "
-            "retries=? WHERE id=?",
+            "UPDATE ticket SET status='waiting', counter_id=NULL, served_by=NULL, called_at=NULL, "
+            "notified=0, retries=? WHERE id=? AND status='serving'",
             (retries, ticket_id),
         )
     db.commit()
@@ -984,28 +1305,82 @@ def add_counter():
 
 
 # ---------------------------------------------------------------------------
-# Routes: doctor management (admin only)
+# Routes: services, providers and settings (admin only)
 # ---------------------------------------------------------------------------
 
-def _read_doctor_form(form):
-    """Validate the add/edit doctor form. Returns (values, error_message)."""
+def _read_service_name(form, db, exclude_id=None):
     name = form.get("name", "").strip()
-    doctor_type = form.get("doctor_type", "General")
-    specialty = form.get("specialty", "").strip()
+    if not name or len(name) > 60:
+        return None, "Name is required (max 60 characters)."
+    rows = db.execute("SELECT id FROM service WHERE LOWER(name)=LOWER(?)", (name,)).fetchall()
+    if any(r["id"] != exclude_id for r in rows):
+        return None, "A service with that name already exists."
+    return name, None
+
+
+@app.route("/admin/services/add", methods=["POST"])
+@admin_required
+def add_service():
+    db = get_db()
+    name, error = _read_service_name(request.form, db)
+    if error:
+        flash(error, "error")
+        return redirect(url_for("admin"))
+    db.execute("INSERT INTO service (name, active) VALUES (?, 1)", (name,))
+    db.commit()
+    flash(f"{name} added.", "info")
+    return redirect(url_for("admin"))
+
+
+@app.route("/admin/services/<int:service_id>/toggle", methods=["POST"])
+@admin_required
+def toggle_service(service_id):
+    db = get_db()
+    if db.execute("SELECT id FROM service WHERE id=?", (service_id,)).fetchone() is None:
+        abort(404, description="Not found.")
+    db.execute("UPDATE service SET active = 1 - active WHERE id=?", (service_id,))
+    db.commit()
+    return redirect(url_for("admin"))
+
+
+@app.route("/admin/services/<int:service_id>/edit", methods=["GET", "POST"])
+@admin_required
+def edit_service(service_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM service WHERE id=?", (service_id,)).fetchone()
+    if row is None:
+        abort(404, description="Not found.")
+    if request.method == "POST":
+        name, error = _read_service_name(request.form, db, exclude_id=service_id)
+        if error:
+            flash(error, "error")
+            return redirect(url_for("edit_service", service_id=service_id))
+        db.execute("UPDATE service SET name=? WHERE id=?", (name, service_id))
+        db.execute("UPDATE ticket SET service_type=? WHERE service_id=?", (name, service_id))
+        db.commit()
+        flash("Service renamed.", "info")
+        return redirect(url_for("admin"))
+    return render_template("admin_service_edit.html", svc=dict(row))
+
+
+def _read_provider_form(form, db):
+    """Validate the add/edit provider form. Returns (values, error_message)."""
+    name = form.get("name", "").strip()
+    kind = form.get("kind", "standard")
+    service_id = form.get("service_id", type=int)
+    location = form.get("location", "").strip()
     days = [d for d in DAY_NAMES if d in form.getlist("days")]
     start = form.get("start_time", "").strip()
     end = form.get("end_time", "").strip()
 
     if not name or len(name) > 100:
-        return None, "Doctor name is required (max 100 characters)."
-    if doctor_type not in DOCTOR_TYPES:
-        return None, "Choose General or Specialist."
-    if not specialty and doctor_type == "General":
-        specialty = "General Medicine"
-    if not specialty:
-        return None, "Enter the specialty (for example Cardiology)."
-    if len(specialty) > 60:
-        return None, "Specialty is too long (max 60 characters)."
+        return None, "Name is required (max 100 characters)."
+    if kind not in KINDS:
+        return None, "Choose a valid type."
+    if service_id is None or db.execute("SELECT id FROM service WHERE id=?", (service_id,)).fetchone() is None:
+        return None, "Choose a service."
+    if len(location) > 60:
+        return None, "Location is too long (max 60 characters)."
     if not days:
         return None, "Select at least one working day."
     if not (TIME_RE.match(start) and TIME_RE.match(end)):
@@ -1013,22 +1388,22 @@ def _read_doctor_form(form):
     if start >= end:
         return None, "End time must be after start time."
     return {
-        "name": name, "doctor_type": doctor_type, "specialty": specialty,
+        "name": name, "kind": kind, "service_id": service_id, "location": location,
         "days": ",".join(days), "start_time": start, "end_time": end,
     }, None
 
 
-@app.route("/admin/doctors/add", methods=["POST"])
+@app.route("/admin/providers/add", methods=["POST"])
 @admin_required
-def add_doctor():
-    values, error = _read_doctor_form(request.form)
+def add_provider():
+    db = get_db()
+    values, error = _read_provider_form(request.form, db)
     if error:
         flash(error, "error")
         return redirect(url_for("admin"))
-    db = get_db()
     db.execute(
-        "INSERT INTO doctor (name, doctor_type, specialty, days, start_time, end_time, active) "
-        "VALUES (:name, :doctor_type, :specialty, :days, :start_time, :end_time, 1)",
+        "INSERT INTO provider (name, kind, service_id, location, days, start_time, end_time, active) "
+        "VALUES (:name, :kind, :service_id, :location, :days, :start_time, :end_time, 1)",
         values,
     )
     db.commit()
@@ -1036,39 +1411,68 @@ def add_doctor():
     return redirect(url_for("admin"))
 
 
-@app.route("/admin/doctors/<int:doctor_id>/toggle", methods=["POST"])
+@app.route("/admin/providers/<int:provider_id>/toggle", methods=["POST"])
 @admin_required
-def toggle_doctor(doctor_id):
+def toggle_provider(provider_id):
     db = get_db()
-    if db.execute("SELECT id FROM doctor WHERE id=?", (doctor_id,)).fetchone() is None:
-        abort(404, description="Doctor not found.")
-    db.execute("UPDATE doctor SET active = 1 - active WHERE id=?", (doctor_id,))
+    if db.execute("SELECT id FROM provider WHERE id=?", (provider_id,)).fetchone() is None:
+        abort(404, description="Not found.")
+    db.execute("UPDATE provider SET active = 1 - active WHERE id=?", (provider_id,))
     db.commit()
     return redirect(url_for("admin"))
 
 
-@app.route("/admin/doctors/<int:doctor_id>/edit", methods=["GET", "POST"])
+@app.route("/admin/providers/<int:provider_id>/edit", methods=["GET", "POST"])
 @admin_required
-def edit_doctor(doctor_id):
+def edit_provider(provider_id):
     db = get_db()
-    row = db.execute("SELECT * FROM doctor WHERE id=?", (doctor_id,)).fetchone()
+    row = db.execute("SELECT * FROM provider WHERE id=?", (provider_id,)).fetchone()
     if row is None:
-        abort(404, description="Doctor not found.")
+        abort(404, description="Not found.")
     if request.method == "POST":
-        values, error = _read_doctor_form(request.form)
+        values, error = _read_provider_form(request.form, db)
         if error:
             flash(error, "error")
-            return redirect(url_for("edit_doctor", doctor_id=doctor_id))
-        values["id"] = doctor_id
+            return redirect(url_for("edit_provider", provider_id=provider_id))
+        values["id"] = provider_id
         db.execute(
-            "UPDATE doctor SET name=:name, doctor_type=:doctor_type, specialty=:specialty, "
+            "UPDATE provider SET name=:name, kind=:kind, service_id=:service_id, location=:location, "
             "days=:days, start_time=:start_time, end_time=:end_time WHERE id=:id",
             values,
         )
         db.commit()
-        flash("Doctor updated.", "info")
+        flash("Updated.", "info")
         return redirect(url_for("admin"))
-    return render_template("admin_doctor_edit.html", doc=dict(row), day_names=DAY_NAMES)
+    return render_template(
+        "admin_provider_edit.html", prov=dict(row), day_names=DAY_NAMES,
+        service_options=db.execute("SELECT * FROM service ORDER BY name").fetchall(),
+    )
+
+
+@app.route("/admin/settings", methods=["GET", "POST"])
+@admin_required
+def settings_page():
+    db = get_db()
+    if request.method == "POST":
+        org_name = request.form.get("org_name", "").strip()
+        org_type = request.form.get("org_type", "")
+        if not org_name or len(org_name) > 80:
+            flash("Organisation name is required (max 80 characters).", "error")
+            return redirect(url_for("settings_page"))
+        if org_type not in PRESETS:
+            flash("Choose a business type.", "error")
+            return redirect(url_for("settings_page"))
+        set_meta(db, "org_name", org_name)
+        set_meta(db, "org_type", org_type)
+        set_meta(db, "require_phone", "1" if request.form.get("require_phone") == "on" else "0")
+        if request.form.get("load_samples") == "on":
+            load_sample_data(db, org_type)
+            flash(f"Settings saved and the sample {PRESETS[org_type]['title']} setup was loaded.", "info")
+        else:
+            flash("Settings saved.", "info")
+        db.commit()
+        return redirect(url_for("admin"))
+    return render_template("settings.html", settings=get_settings(db), presets=PRESETS)
 
 
 # ---------------------------------------------------------------------------

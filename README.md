@@ -19,11 +19,13 @@ smart_queue/
 │   ├── ticket.html
 │   ├── admin.html
 │   ├── admin_login.html
-│   ├── admin_doctor_edit.html
+│   ├── admin_provider_edit.html
+│   ├── admin_service_edit.html
+│   ├── settings.html
 │   ├── track.html
 │   ├── print.html
-│   ├── _doctor_form.html
-│   ├── _doctor_badges.html
+│   ├── _provider_form.html
+│   ├── _badges.html
 │   └── error.html
 ├── static/
 │   ├── css/
@@ -342,46 +344,77 @@ button in the header when you are done. This is a single shared password,
 suitable for a prototype or demo; for real use, switch to individual accounts.
 
 
-## Doctors, Phone Lookup and Token Printing (OPD features)
+## One Queue System for Any Business
 
-**Doctors.** Each doctor has a type (General physician or Specialist), a
-specialty, working days and working hours. Everyone can see the list with a
-live status ("Available now", "Arrives at 10:00 AM", "Done for today",
-"Off today", "On leave"). A patient picks a doctor type, then a doctor, when
-joining. Each doctor has their own queue, so the position and wait time shown
-on a token are for that doctor's queue only.
+The app works for hospitals, clinics, supermarkets, banks and offices. Staff
+choose the **business type** in **Settings** (staff login, then *Settings* in
+the top bar). The wording of the whole app, the printed token and the queue
+style change to match.
 
-Staff (after logging in) can add doctors, edit their days and hours, set a
-doctor on leave, and press **Call Next** for a particular doctor. A doctor sees
-one patient at a time, so Call Next for a doctor is refused until the current
-token is completed. The old "Call Next Ticket (any doctor)" button still works.
-If every doctor is on leave, the join page falls back to the original
-service-type form.
+| Business type | Customers choose | Called by | Wording |
+|---|---|---|---|
+| Hospital, Clinic | a department, then a **doctor** (required) | each doctor, from their own queue | Doctor, Department, Patient |
+| Supermarket, Bank | a service, then a **counter** or "Any available" | each counter, from its own queue and the service's shared queue | Counter, Service, Customer |
+| Office / Other | a service only | counters, from the service's shared queue | Staff, Service, Customer |
 
-Sample doctors are added automatically the first time the app starts with no
-doctors. Edit or deactivate them in the admin panel.
+**Services and providers.** A *service* is what the customer needs
+(Cardiology, Billing, Loans...). A *provider* is who serves it (a doctor, a
+counter, an officer). Each provider has a type (General/Specialist or
+Regular/Express), a service, an optional location (Room 2), working days and
+working hours. Everyone sees a live status for each provider: "Available now",
+"Arrives at 10:00 AM", "Done for today", "Off today" or "Not available".
+Staff can add and edit services and providers, close a service, and set a
+provider unavailable.
 
-**Mobile number.** Required when joining (10-digit Indian mobile number;
-`+91` and spaces are accepted). The same number cannot hold two active tokens
-with the same doctor. It is stored as digits and only shown **masked**
-(`******3210`) on public pages; logged-in staff see the full number.
+**Queues.** A ticket either asks for a particular provider (their own queue) or
+for "Any available" (the shared queue of the service). When a provider presses
+**Call Next** they get the first ticket, priority first and then arrival
+order, from their own queue and the shared queue. A provider serves one
+customer at a time. In the Office setup, services use counters: **Call Next**
+for a service (or for any service) puts the ticket on the least-loaded counter,
+with round-robin to break ties.
 
-**Track Token.** On the *Track Token* page, enter your mobile number to see all
-your recent tokens with doctor, timings, position, estimated wait and status.
-This is a lookup by number, not an SMS one-time-password check; anyone who
-knows a number can see that number's token details (no other personal data is
-shown). Real OTP verification needs an SMS service and is future work.
-Lookups are rate-limited (5 per minute per IP).
+**Switching business type.** Changing the type changes wording and queue style
+only. To start from a clean sample setup, tick *Load the sample setup*; this
+deletes all current tickets, providers, services and counters.
+
+**Time-based alerts.** Each customer picks "alert me N minutes before my turn"
+(2, 5, 10, 15 or 20) when joining, and can change it on the ticket page. The
+ticket page asks the server for the estimated wait every 5 seconds and, in
+the Android app, shows a phone notification as soon as the estimate falls to
+that many minutes, then another when the customer is called. Estimate =
+people ahead x average service time / servers (one provider, the active
+providers of the service, or the active counters). It does not include the time
+left on the customer being served right now, so alerts can come slightly late.
+
+**Mobile number.** Required by default (can be switched off in Settings). It is
+a 10-digit Indian mobile number; `+91` and spaces are accepted. One person
+cannot hold two active tokens for the same service. The number is stored as
+digits and only shown **masked** (`******3210`) on public pages; logged-in staff
+see the full number.
+
+**Track Token.** On *Track Token*, a customer enters their mobile number to see
+their recent tokens with provider, timings, position, estimated wait and
+status. This is a lookup by number, not an SMS one-time-password check, so
+anyone who knows a number can see that number's token details (no other
+personal data is shown). Real OTP verification needs an SMS service and is
+future work. Lookups are limited to 5 per minute per IP.
 
 **Printing.** Every ticket page has a *Print token* button that opens a token
-slip (token number, patient, masked mobile, doctor, doctor timings, position,
-estimated wait, issue time). In a browser it uses the normal print dialog; in
-the Android app it opens Android's print dialog (print or Save as PDF).
+slip (organisation, token number, name, masked mobile, service, provider,
+timings, position, estimated wait, issue time). In a browser it uses the normal
+print dialog; in the Android app it opens Android's print dialog (print or Save
+as PDF).
 
 **Settings (environment variables, optional):**
-- `TIMEZONE` - for doctor timings and token times (default `Asia/Kolkata`)
-- `ORG_NAME` - name printed at the top of the token slip (default `Smart Queue OPD`)
+- `TIMEZONE` - for timings and token times (default `Asia/Kolkata`)
+- `ORG_NAME` - the organisation name used the first time the app starts
+  (default `Smart Queue`); change it later in Settings
 
-**Note for the optional TFT model:** tickets now store the doctor's specialty
-in `service_type`, so the TFT training data would need matching service types
+**Upgrading from an older version.** If the app finds a database created by an
+older version, it saves it as `queue.db.old-<time>` and starts a new one. (On
+Render's free tier the database is reset on every restart anyway.)
+
+**Note for the optional TFT model:** tickets store the service name in
+`service_type`, so the TFT training data would need matching service names
 before retraining.
